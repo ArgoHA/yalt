@@ -42,9 +42,6 @@ yalt 0.1.0 targets Apple Silicon Macs running macOS 12 or later. Download the
 DMG from [GitHub Releases](https://github.com/ArgoHA/yalt/releases) and drag
 yalt into Applications.
 
-Homebrew installation is not available yet. It will be added after the first
-signed and notarized GitHub release has been verified.
-
 ### Build from source
 
 Requirements:
