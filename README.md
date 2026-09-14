@@ -54,7 +54,7 @@ Requirements:
 - Xcode command-line tools.
 
 ```sh
-npm install
+npm ci
 npm run tauri dev
 ```
 
@@ -64,10 +64,11 @@ Run the frontend build, web tests, and Rust tests:
 npm run check
 ```
 
-Build an Apple Silicon app and DMG locally:
+Build an Apple Silicon app and DMG locally, then open the installer:
 
 ```sh
 npm run tauri -- build --target aarch64-apple-darwin
+open src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/yalt_0.1.0_aarch64.dmg
 ```
 
 Local bundles are unsigned unless Apple signing credentials are configured.
