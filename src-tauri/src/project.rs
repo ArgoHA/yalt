@@ -130,6 +130,55 @@ pub fn summary(root_path: &str) -> Result<ProjectSummary, String> {
     summary_from_connection(&connection)
 }
 
+pub fn remove_storage(root_path: &str) -> Result<(), String> {
+    let supplied_root = Path::new(root_path);
+    if !supplied_root.exists() {
+        return Ok(());
+    }
+
+    let root = canonical_dataset_root(root_path)?;
+    let project_directory = project_directory_for_root(&root);
+    let database_path = project_directory.join(DATABASE_FILE);
+    if !database_path.is_file() {
+        return Ok(());
+    }
+
+    {
+        let connection = Connection::open(&database_path).map_err(|error| {
+            format!(
+                "Could not verify the yalt project data in {}: {error}",
+                root.display()
+            )
+        })?;
+        connection
+            .query_row("SELECT id FROM project LIMIT 1", [], |_| Ok(()))
+            .map_err(|error| {
+                format!(
+                    "Could not verify the yalt project data in {}: {error}",
+                    root.display()
+                )
+            })?;
+    }
+
+    let metadata = fs::symlink_metadata(&project_directory).map_err(|error| {
+        format!(
+            "Could not inspect the project storage in {}: {error}",
+            root.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        fs::remove_file(&project_directory)
+    } else {
+        fs::remove_dir_all(&project_directory)
+    }
+    .map_err(|error| {
+        format!(
+            "Could not remove the project storage in {}: {error}",
+            root.display()
+        )
+    })
+}
+
 pub fn list_images(root_path: &str, limit: u32, offset: u32) -> Result<Vec<ImageRecord>, String> {
     let root = canonical_dataset_root(root_path)?;
     let database_path = project_database_path(&root);
@@ -630,6 +679,32 @@ mod tests {
         let reopened = open(&root).expect("legacy project reopen");
         assert_eq!(reopened.name, "Legacy");
         assert_eq!(reopened.image_count, 1);
+    }
+
+    #[test]
+    fn removes_project_storage_without_removing_source_images() {
+        let directory = TempDir::new().expect("temporary directory");
+        let image_path = directory.path().join("one.jpg");
+        write_test_image(&image_path, 80, 60);
+        let root = directory.path().to_string_lossy();
+        create(&root, "Disposable", "detection", None).expect("project creation");
+
+        remove_storage(&root).expect("project removal");
+
+        assert!(image_path.is_file());
+        assert!(!directory.path().join(PROJECT_DIRECTORY).exists());
+    }
+
+    #[test]
+    fn refuses_to_remove_an_unrecognized_hidden_directory() {
+        let directory = TempDir::new().expect("temporary directory");
+        let hidden = directory.path().join(PROJECT_DIRECTORY);
+        fs::create_dir(&hidden).expect("hidden directory");
+        fs::write(hidden.join(DATABASE_FILE), "not a yalt database").expect("unrelated file");
+        let root = directory.path().to_string_lossy();
+
+        assert!(remove_storage(&root).is_err());
+        assert!(hidden.is_dir());
     }
 
     #[test]

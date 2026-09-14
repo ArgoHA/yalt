@@ -64,6 +64,7 @@ npm run check
 Build an Apple Silicon app and DMG locally, then open the installer:
 
 ```sh
+npm ci
 npm run tauri -- build --target aarch64-apple-darwin
 open src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/yalt_0.1.0_aarch64.dmg
 ```
@@ -78,6 +79,10 @@ Local bundles are unsigned unless Apple signing credentials are configured.
 4. Annotate with the canvas, class list, or keyboard shortcuts.
 5. Open the project menu (`•••`) to import or export YOLO, COCO, CSV, or class
    directories.
+
+To remove a project, return to the home screen and choose the trash button on
+its card. After confirmation, yalt removes the card and the hidden `.yalt`
+project data. Original images and all other source files remain untouched.
 
 For detection, press and drag to draw a box. A click without a meaningful drag
 creates nothing and clears the selection. The selected box shows eight resize

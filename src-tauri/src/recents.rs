@@ -69,9 +69,21 @@ pub fn remember(app_data_directory: &Path, project: &ProjectSummary) -> Result<(
     );
     projects.truncate(12);
 
+    save(app_data_directory, &projects)
+}
+
+pub fn forget(app_data_directory: &Path, root_path: &str) -> Result<(), String> {
+    let mut projects = list(app_data_directory)?;
+    projects.retain(|recent| recent.root_path != root_path);
+    save(app_data_directory, &projects)
+}
+
+fn save(app_data_directory: &Path, projects: &[RecentProject]) -> Result<(), String> {
+    fs::create_dir_all(app_data_directory)
+        .map_err(|error| format!("Could not create app data storage: {error}"))?;
     let path = app_data_directory.join("recent-projects.json");
     let temporary_path = app_data_directory.join("recent-projects.json.tmp");
-    let json = serde_json::to_string_pretty(&projects)
+    let json = serde_json::to_string_pretty(projects)
         .map_err(|error| format!("Could not serialize recent projects: {error}"))?;
     fs::write(&temporary_path, json)
         .map_err(|error| format!("Could not write recent projects: {error}"))?;
@@ -98,5 +110,23 @@ mod tests {
         let projects = list(&directory.path().join("com.argoha.yalt")).expect("recent projects");
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "Wildlife");
+    }
+
+    #[test]
+    fn forget_removes_only_the_requested_recent_project() {
+        let directory = TempDir::new().expect("temporary directory");
+        let app_data = directory.path().join("com.argoha.yalt");
+        fs::create_dir(&app_data).expect("app data directory");
+        fs::write(
+            app_data.join("recent-projects.json"),
+            r#"[{"name":"One","rootPath":"/one","taskType":"detection","lastOpenedAtMs":2,"available":true},{"name":"Two","rootPath":"/two","taskType":"segmentation","lastOpenedAtMs":1,"available":true}]"#,
+        )
+        .expect("recent projects");
+
+        forget(&app_data, "/one").expect("forget project");
+
+        let projects = list(&app_data).expect("remaining recent projects");
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Two");
     }
 }

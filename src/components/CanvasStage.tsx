@@ -254,19 +254,41 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
       drawPolygonDraft(overlay, draft, preview, color, ratio, viewport);
     }
     const hoveringEditableBox = activeToolRef.current === "rectangle" && hovered && !commandDownRef.current;
-    if (pointer && activeToolRef.current !== "select" && !hoveringEditableBox && !spaceDownRef.current && !panDragRef.current) {
-      const x = Math.round(pointer.x * ratio) + 0.5;
-      const y = Math.round(pointer.y * ratio) + 0.5;
-      const gap = 6 * ratio;
+    const pointerImagePoint = pointer ? screenToImage(viewport, pointer) : null;
+    const pointerInsideImage = pointerImagePoint
+      && pointerImagePoint.x >= 0
+      && pointerImagePoint.y >= 0
+      && pointerImagePoint.x <= image.width
+      && pointerImagePoint.y <= image.height;
+    if (pointer && pointerInsideImage && activeToolRef.current !== "select" && !hoveringEditableBox && !spaceDownRef.current && !panDragRef.current) {
+      const x = pointer.x * ratio;
+      const y = pointer.y * ratio;
       const color = activeClassRef.current?.color ?? "#f2f4f5";
-      const crosshair = (stroke: string, width: number) => {
+      const gap = 7 * ratio;
+      const drawGuides = (stroke: string, width: number) => {
         overlay.beginPath();
-        overlay.moveTo(0, y); overlay.lineTo(x - gap, y); overlay.moveTo(x + gap, y); overlay.lineTo(pixelWidth, y);
-        overlay.moveTo(x, 0); overlay.lineTo(x, y - gap); overlay.moveTo(x, y + gap); overlay.lineTo(x, pixelHeight);
-        overlay.strokeStyle = stroke; overlay.lineWidth = width * ratio; overlay.stroke();
+        overlay.moveTo(0, y);
+        overlay.lineTo(x - gap, y);
+        overlay.moveTo(x + gap, y);
+        overlay.lineTo(pixelWidth, y);
+        overlay.moveTo(x, 0);
+        overlay.lineTo(x, y - gap);
+        overlay.moveTo(x, y + gap);
+        overlay.lineTo(x, pixelHeight);
+        overlay.strokeStyle = stroke;
+        overlay.lineWidth = width * ratio;
+        overlay.stroke();
       };
-      crosshair("rgba(0,0,0,.84)", 2.6);
-      crosshair(color, 1);
+      drawGuides("rgba(0,0,0,.84)", 2.6);
+      drawGuides(color, 1);
+      overlay.beginPath();
+      overlay.arc(x, y, 4.5 * ratio, 0, Math.PI * 2);
+      overlay.fillStyle = "rgba(0,0,0,.82)";
+      overlay.fill();
+      overlay.beginPath();
+      overlay.arc(x, y, 2.25 * ratio, 0, Math.PI * 2);
+      overlay.fillStyle = color;
+      overlay.fill();
     }
   }, [drawBox, drawPolygon, image.height, image.width, imageSize]);
 
@@ -466,8 +488,8 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
   };
   const cursor = dragging || spaceDown
     ? dragging ? "grabbing" : "grab"
-    : activeTool === "rectangle" && commandDown ? "crosshair"
-      : activeTool === "select" || activeTool === "rectangle" ? editCursor
+    : activeTool === "select" ? editCursor
+      : activeTool === "rectangle" && editCursor !== "default" && !commandDown ? editCursor
         : "none";
 
   return (

@@ -62,6 +62,10 @@ export function openProject(rootPath: string): Promise<ProjectSummary> {
   return invoke("open_project", { rootPath });
 }
 
+export function removeProject(rootPath: string): Promise<void> {
+  return invoke("remove_project", { rootPath });
+}
+
 export function rescanProject(rootPath: string): Promise<ProjectSummary> {
   return invoke("rescan_project", { rootPath });
 }

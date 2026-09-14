@@ -6,6 +6,7 @@ import {
   getThumbnail,
   listRecentProjects,
   openProject,
+  removeProject,
 } from "./backend";
 import type {
   ClassificationMode,
@@ -22,7 +23,7 @@ const TASK_LABELS: Record<TaskType, string> = {
   classification: "Image classification",
 };
 
-function Icon({ name }: { name: "folder" | "plus" | "arrow" | "refresh" | "image" | "database" }) {
+function Icon({ name }: { name: "folder" | "plus" | "arrow" | "refresh" | "image" | "database" | "trash" }) {
   const paths = {
     folder: <path d="M3.5 6.5h6l2 2h9v10h-17zM3.5 6.5v-2h6l2 2" />,
     plus: <path d="M12 5v14M5 12h14" />,
@@ -30,6 +31,7 @@ function Icon({ name }: { name: "folder" | "plus" | "arrow" | "refresh" | "image
     refresh: <path d="M19 8a8 8 0 1 0 1 7M19 4v4h-4" />,
     image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 5-5 4 4 2-2 5 4" /></>,
     database: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7" /></>,
+    trash: <><path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M10 11v5M14 11v5" /></>,
   };
   return <svg aria-hidden="true" viewBox="0 0 24 24">{paths[name]}</svg>;
 }
@@ -68,6 +70,7 @@ export default function App() {
   const [recents, setRecents] = useState<RecentProject[]>([]);
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [projectToRemove, setProjectToRemove] = useState<RecentProject | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,6 +106,21 @@ export default function App() {
       title: "Open a yalt project folder",
     });
     if (typeof selected === "string") await openRoot(selected);
+  };
+
+  const confirmRemoval = async () => {
+    if (!projectToRemove) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await removeProject(projectToRemove.rootPath);
+      setProjectToRemove(null);
+      await reloadRecents();
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (project) {
@@ -155,25 +173,45 @@ export default function App() {
               <span>Choose a folder of JPEG, PNG, WebP, or TIFF images. yalt indexes them without copying them.</span>
             </button>
           ) : recents.map((recent) => (
-            <button
-              className="recent-card"
-              key={recent.rootPath}
-              disabled={!recent.available || busy}
-              onClick={() => void openRoot(recent.rootPath)}
-            >
-              <span className="recent-preview">
-                <RecentPreview project={recent} />
-                <span className="preview-task">{TASK_LABELS[recent.taskType]}</span>
-                {!recent.available && <span className="preview-unavailable">Folder unavailable</span>}
-              </span>
-              <span className="recent-card-copy">
-                <strong>{recent.name}</strong>
-                <span title={recent.rootPath}>{recent.rootPath}</span>
-              </span>
-            </button>
+            <article className="recent-card-container" key={recent.rootPath}>
+              <button
+                className="recent-card"
+                disabled={!recent.available || busy}
+                onClick={() => void openRoot(recent.rootPath)}
+              >
+                <span className="recent-preview">
+                  <RecentPreview project={recent} />
+                  <span className="preview-task">{TASK_LABELS[recent.taskType]}</span>
+                  {!recent.available && <span className="preview-unavailable">Folder unavailable</span>}
+                </span>
+                <span className="recent-card-copy">
+                  <strong>{recent.name}</strong>
+                  <span title={recent.rootPath}>{recent.rootPath}</span>
+                </span>
+              </button>
+              <button
+                className="recent-remove"
+                aria-label={`Remove ${recent.name}`}
+                title="Remove project"
+                disabled={busy}
+                onClick={() => { setError(null); setProjectToRemove(recent); }}
+              >
+                <Icon name="trash" />
+              </button>
+            </article>
           ))}
         </div>
       </section>
+
+      {projectToRemove && (
+        <RemoveProjectSheet
+          project={projectToRemove}
+          busy={busy}
+          error={error}
+          onCancel={() => { if (!busy) setProjectToRemove(null); }}
+          onConfirm={confirmRemoval}
+        />
+      )}
 
       {showCreate && (
         <CreateProjectSheet
@@ -197,6 +235,50 @@ export default function App() {
         />
       )}
     </main>
+  );
+}
+
+function RemoveProjectSheet({
+  project,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  project: RecentProject;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return (
+    <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
+      <form
+        className="remove-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="remove-project-title"
+        onSubmit={(event) => { event.preventDefault(); void onConfirm(); }}
+      >
+        <header>
+          <span className="remove-sheet-icon"><Icon name="trash" /></span>
+          <div>
+            <h2 id="remove-project-title">Remove “{project.name}”?</h2>
+            {project.available ? (
+              <p>yalt will delete the project’s hidden <code>.yalt</code> data and remove it from this screen. Your original images and every other source file will stay untouched.</p>
+            ) : (
+              <p>The source folder is unavailable, so yalt can remove this project from the list but cannot delete its hidden project data. Your original files will stay untouched.</p>
+            )}
+          </div>
+        </header>
+        {project.available && <p className="remove-warning">Annotations, labels, history, and thumbnails stored by yalt will be permanently deleted. This cannot be undone.</p>}
+        {error && <div className="sheet-error" role="alert">{error}</div>}
+        <footer>
+          <button type="button" className="text-button" autoFocus onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="danger-button" disabled={busy}>{busy ? "Removing…" : project.available ? "Remove project" : "Remove from list"}</button>
+        </footer>
+      </form>
+    </div>
   );
 }
 

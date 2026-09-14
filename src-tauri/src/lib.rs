@@ -50,6 +50,19 @@ async fn open_project(app: tauri::AppHandle, root_path: String) -> Result<Projec
 }
 
 #[tauri::command(rename_all = "camelCase")]
+async fn remove_project(app: tauri::AppHandle, root_path: String) -> Result<(), String> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Could not locate app data storage: {error}"))?;
+    let path_for_removal = root_path.clone();
+    tauri::async_runtime::spawn_blocking(move || project::remove_storage(&path_for_removal))
+        .await
+        .map_err(|error| format!("Removing the project stopped unexpectedly: {error}"))??;
+    recents::forget(&directory, &root_path)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 async fn rescan_project(root_path: String) -> Result<ProjectSummary, String> {
     tauri::async_runtime::spawn_blocking(move || project::rescan(&root_path))
         .await
@@ -554,6 +567,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_project,
             open_project,
+            remove_project,
             rescan_project,
             get_project_summary,
             list_project_images,
