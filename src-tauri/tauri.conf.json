@@ -27,6 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns"],
     "category": "DeveloperTool",
     "shortDescription": "Local-first image annotation",
     "longDescription": "A fast local-first macOS application for object detection, polygon segmentation, and image classification datasets.",

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/yalt-icon.png" width="128" height="128" alt="yalt logo">
+  <img src="assets/brand/yalt-icon.svg" width="128" height="128" alt="yalt logo">
 </p>
 
 <h1 align="center">yalt</h1>

@@ -14,7 +14,7 @@ import type {
   TaskType,
 } from "./types";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
-import yaltIcon from "../assets/brand/yalt-icon-64.png";
+import yaltIcon from "../assets/brand/yalt-icon.svg";
 
 const TASK_LABELS: Record<TaskType, string> = {
   detection: "Object detection",
