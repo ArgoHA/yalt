@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff", "webp"] }
 kamadak-exif = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
