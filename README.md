@@ -16,10 +16,7 @@
   <img alt="Platform: macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-black.svg">
 </p>
 
-yalt handles object detection, instance segmentation, and image classification
-without a server, an account, or an upload step. Images never leave your Mac.
-Annotations autosave to a local SQLite database, and exchange files are only
-written when you explicitly import or export them.
+yalt handles object detection, instance segmentation, and image classification without a server, an account, or an upload step. Images never leave your Mac. Annotations autosave to a local SQLite database, and exchange files are only written when you explicitly import or export them.
 
 ## Features
 
