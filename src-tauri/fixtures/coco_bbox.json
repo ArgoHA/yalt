@@ -1,0 +1,11 @@
+{
+  "images": [
+    { "id": 42, "file_name": "frame.jpg", "width": 200, "height": 100 }
+  ],
+  "categories": [
+    { "id": 7, "name": "vehicle" }
+  ],
+  "annotations": [
+    { "id": 1, "image_id": 42, "category_id": 7, "bbox": [24.0, 12.0, 80.0, 50.0], "area": 4000.0, "iscrowd": 0 }
+  ]
+}

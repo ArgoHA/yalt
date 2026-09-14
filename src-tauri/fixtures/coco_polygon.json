@@ -1,0 +1,22 @@
+{
+  "images": [
+    { "id": 1, "file_name": "frame.jpg", "width": 200, "height": 100 }
+  ],
+  "categories": [
+    { "id": 4, "name": "vehicle" }
+  ],
+  "annotations": [
+    {
+      "id": 9,
+      "image_id": 1,
+      "category_id": 4,
+      "segmentation": [
+        [20, 10, 80, 10, 80, 50, 20, 50],
+        [100, 20, 120, 20, 110, 35]
+      ],
+      "bbox": [20, 10, 100, 40],
+      "area": 2700,
+      "iscrowd": 0
+    }
+  ]
+}

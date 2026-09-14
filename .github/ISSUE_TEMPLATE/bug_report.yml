@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible problem in yalt
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please do not upload private images or project databases.
+  - type: input
+    id: version
+    attributes:
+      label: yalt version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+    validations:
+      required: true
+  - type: dropdown
+    id: task
+    attributes:
+      label: Project task
+      options:
+        - Object detection
+        - Instance segmentation
+        - Image classification
+        - Project setup or navigation
+        - Import or export
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Describe the smallest sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

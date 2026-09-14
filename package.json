@@ -1,0 +1,38 @@
+{
+  "name": "yalt",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A lightweight, fully local image annotation tool for macOS",
+  "author": "Argo Saakyan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArgoHA/yalt.git"
+  },
+  "homepage": "https://github.com/ArgoHA/yalt#readme",
+  "bugs": "https://github.com/ArgoHA/yalt/issues",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "test:web": "vitest run",
+    "check": "npm run build && npm run test:web && cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.4",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5",
+    "vitest": "^5.0.0"
+  }
+}
