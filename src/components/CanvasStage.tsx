@@ -17,6 +17,7 @@ import {
 } from "../editor/boxes";
 import { hitTestTopmost, type SelectableGeometry } from "../editor/hitTest";
 import { movePolygon, movePolygonVertex, polygonVertexAt, type PolygonVertex } from "../editor/polygons";
+import { isTypingTarget } from "../editor/shortcuts";
 import {
   constrainViewport, fitViewport, fromSnapshot, imageToScreen, pan, restoreViewport,
   screenToImage, toSnapshot, zoomAt, type Point, type Size, type Viewport,
@@ -254,13 +255,9 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
       drawPolygonDraft(overlay, draft, preview, color, ratio, viewport);
     }
     const hoveringEditableBox = activeToolRef.current === "rectangle" && hovered && !commandDownRef.current;
-    const pointerImagePoint = pointer ? screenToImage(viewport, pointer) : null;
-    const pointerInsideImage = pointerImagePoint
-      && pointerImagePoint.x >= 0
-      && pointerImagePoint.y >= 0
-      && pointerImagePoint.x <= image.width
-      && pointerImagePoint.y <= image.height;
-    if (pointer && pointerInsideImage && activeToolRef.current !== "select" && !hoveringEditableBox && !spaceDownRef.current && !panDragRef.current) {
+    // The interaction canvas includes the gray margin. Wherever its native
+    // cursor is hidden, draw the replacement, including outside the image.
+    if (pointer && activeToolRef.current !== "select" && !hoveringEditableBox && !spaceDownRef.current && !panDragRef.current) {
       const x = pointer.x * ratio;
       const y = pointer.y * ratio;
       const color = activeClassRef.current?.color ?? "#f2f4f5";
@@ -490,7 +487,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
     ? dragging ? "grabbing" : "grab"
     : activeTool === "select" ? editCursor
       : activeTool === "rectangle" && editCursor !== "default" && !commandDown ? editCursor
-        : "none";
+        : ready ? "none" : "crosshair";
 
   return (
     <div className="canvas-stage" ref={hostRef} data-ready={ready}>
@@ -498,6 +495,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
       <canvas
         className="interaction-canvas" ref={overlayCanvasRef} tabIndex={0}
         aria-label={`${image.fileName} annotation canvas`} style={{ cursor }}
+        onPointerEnter={(event) => { const screen = pointerCoordinates(event); updateEditHover(screen); reportPointer(screen); }}
         onPointerDown={(event) => {
           const screen = pointerCoordinates(event);
           if (spaceDown || event.button === 1) {
@@ -652,10 +650,6 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
     </div>
   );
 });
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
-}
 
 function boxCursor(handle: BoxHandle): string {
   if (handle === "move") return "grab";

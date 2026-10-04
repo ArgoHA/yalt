@@ -5,6 +5,7 @@ mod project;
 mod recents;
 mod segmentation;
 mod workspace;
+mod yolo;
 
 use classification::{ClassificationReport, ClassificationState};
 use detection::{

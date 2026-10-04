@@ -47,7 +47,7 @@ import {
 } from "../backend";
 import { ImageUrlCache } from "../editor/imageCache";
 import { geometryArea, geometryWarnings } from "../editor/polygons";
-import { loadShortcuts, matchesShortcut, saveShortcuts, shortcutLabel, type ShortcutMap } from "../editor/shortcuts";
+import { isTypingTarget, loadShortcuts, matchesShortcut, saveShortcuts, shortcutLabel, type ShortcutMap } from "../editor/shortcuts";
 import type {
   AnnotationDraft,
   AnnotationRecord,
@@ -403,6 +403,7 @@ export function ProjectWorkspace({
     setError(null);
     try {
       const summary = await rescanProject(project.rootPath);
+      cacheRef.current.clear();
       commitProject(summary);
       await reloadMetadata();
     } catch (reason) {
@@ -614,8 +615,10 @@ export function ProjectWorkspace({
       if (annotation.kind === "bbox") await deleteBboxAnnotation(project.rootPath, annotation.id);
       else await deletePolygonAnnotation(project.rootPath, annotation.id);
       const remaining = annotations.filter((item) => item.id !== annotation.id);
-      setAnnotations(remaining);
-      setSelectedAnnotationId(remaining.at(-1)?.id ?? null);
+      if (selectedIdRef.current === annotation.imageId) {
+        setAnnotations((current) => current.filter((item) => item.id !== annotation.id));
+        setSelectedAnnotationId((current) => current === null || current === annotation.id ? remaining.at(-1)?.id ?? null : current);
+      }
       await refreshHistoryState();
     } catch (reason) {
       setError(message(reason));
@@ -721,7 +724,7 @@ export function ProjectWorkspace({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isTypingTarget(event.target) || event.code === "Space") {
+      if (showShortcutSettings || isTypingTarget(event.target) || event.code === "Space") {
         pendingImageDeleteAtRef.current = null;
         return;
       }
@@ -750,7 +753,7 @@ export function ProjectWorkspace({
         event.preventDefault();
       } else if (event.key === "Backspace" || event.key === "Delete") {
         event.preventDefault();
-        if (event.key === "Backspace" && canvasRef.current?.removeLastDraftPoint()) return;
+        if (canvasRef.current?.removeLastDraftPoint()) return;
         if (event.repeat) return;
         void removeAnnotation(selectedAnnotation ?? annotations.at(-1) ?? null);
       } else if (event.key === "Escape") {
@@ -811,7 +814,7 @@ export function ProjectWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeClassId, activateTool, allowedTools, annotations, annotationsLoadedId, beginIsland, chooseClass, classes, classifyImage, moveSelectedToDeleted, navigate, project.taskType, redo, removeAnnotation, selected, selectedAnnotation, shortcuts, undo]);
+  }, [activeClassId, activateTool, allowedTools, annotations, annotationsLoadedId, beginIsland, chooseClass, classes, classifyImage, moveSelectedToDeleted, navigate, project.taskType, redo, removeAnnotation, selected, selectedAnnotation, shortcuts, showShortcutSettings, undo]);
 
   const commitShortcuts = useCallback((next: ShortcutMap) => {
     saveShortcuts(next);
@@ -1108,10 +1111,4 @@ function annotationSummary(annotation: AnnotationRecord): string {
 function panelPreference(key: string, fallback: boolean, legacyKey?: string): boolean {
   const stored = localStorage.getItem(key) ?? (legacyKey ? localStorage.getItem(legacyKey) : null);
   return stored === null ? fallback : stored !== "hidden";
-}
-
-function isTypingTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLInputElement
-    || target instanceof HTMLTextAreaElement
-    || (target instanceof HTMLElement && target.isContentEditable);
 }

@@ -80,6 +80,16 @@ export function matchesShortcut(event: Pick<KeyboardEvent, "key" | "metaKey" | "
     && normalizeShortcut(event.key) === normalizeShortcut(value);
 }
 
+export function isTypingTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (
+    target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target.isContentEditable
+    || target.closest('[role="dialog"]') !== null
+  );
+}
+
 function isAllowedShortcut(value: string): boolean {
   return value.length === 1 && !/\s/.test(value);
 }

@@ -280,8 +280,6 @@ pub fn export_coco(root_path: &str, destination: &str) -> Result<detection::Impo
 
 pub fn export_yolo(root_path: &str, destination: &str) -> Result<detection::ImportReport, String> {
     let directory = Path::new(destination);
-    fs::create_dir_all(directory)
-        .map_err(|error| format!("Could not create the YOLO export folder: {error}"))?;
     let root = project::dataset_root(root_path)?;
     let connection = project::connection_for_root(&root)?;
     require_segmentation(&connection)?;
@@ -289,6 +287,8 @@ pub fn export_yolo(root_path: &str, destination: &str) -> Result<detection::Impo
     if classes.is_empty() {
         return Err("Add at least one class before exporting YOLO polygons.".to_owned());
     }
+    let images = image_lookup(&connection)?;
+    crate::yolo::prepare_export(directory, images.iter().map(|image| image.1.as_str()))?;
     fs::write(
         directory.join("labels.txt"),
         format!(
@@ -306,7 +306,6 @@ pub fn export_yolo(root_path: &str, destination: &str) -> Result<detection::Impo
         .enumerate()
         .map(|(index, item)| (item.id.as_str(), index))
         .collect();
-    let images = image_lookup(&connection)?;
     let mut objects = 0;
     let mut polygon_rows = 0;
     let mut annotated_images = 0;
@@ -1167,6 +1166,26 @@ mod tests {
             list_annotations(&root, &image_id).expect("polygons").len(),
             2
         );
+    }
+
+    #[test]
+    fn yolo_export_rejects_collisions_and_stale_destinations() {
+        let (directory, root, _) = project_with_image();
+        detection::create_class(&root, "person").expect("class");
+        let destination = directory.path().join("export");
+        export_yolo(&root, &destination.to_string_lossy()).expect("first export");
+        let class_list = fs::read(destination.join("labels.txt")).expect("classes");
+        assert!(export_yolo(&root, &destination.to_string_lossy())
+            .expect_err("nonempty export").contains("new or empty"));
+        assert_eq!(fs::read(destination.join("labels.txt")).expect("unchanged classes"), class_list);
+
+        ImageBuffer::from_pixel(200, 100, Rgb([1_u8, 2_u8, 3_u8]))
+            .save(directory.path().join("frame.png")).expect("duplicate stem");
+        project::rescan(&root).expect("rescan");
+        let collision_destination = directory.path().join("collision-export");
+        assert!(export_yolo(&root, &collision_destination.to_string_lossy())
+            .expect_err("collision").contains("conflicts"));
+        assert!(!collision_destination.exists());
     }
 
     #[test]

@@ -95,6 +95,11 @@ Select an object and use **Add island** to add a disconnected contour to the
 same instance. COCO preserves that relationship. Plain YOLO TXT cannot, so
 each island is exported and imported as a separate row.
 
+YOLO export requires a new or empty folder so old label files cannot survive
+an export. Images must map to unique TXT paths: for example, `frame.jpg` and
+`frame.png` in the same directory conflict, and a root-level `labels.jpg`
+conflicts with the class list. Rename those images or use COCO export.
+
 For single-label classification, assigning a class moves the source image into
 that class directory and advances to the next image. The move is journaled and
 undoable. Multi-label classification never moves source images.
