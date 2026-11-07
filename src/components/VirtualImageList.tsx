@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ImageRecord } from "../types";
 
-const ROW_HEIGHT = 50;
+const ROW_HEIGHT = 46;
 const OVERSCAN = 8;
 
 export function VirtualImageList({

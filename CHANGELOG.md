@@ -5,6 +5,14 @@ All notable changes to yalt will be documented in this file. The project uses
 
 ## [Unreleased]
 
+### Added
+
+- Keypoint estimation projects: a box plus an ordered, per-project list of
+  named points per object, placed click by click with visible, occluded, and
+  missing states. YOLO-pose and COCO keypoint import/export in the formats
+  D-FINE-seg reads. Opening an existing project upgrades it to schema version 5
+  after a backup.
+
 ## [0.1.0] - 2026-09-14
 
 ### Added

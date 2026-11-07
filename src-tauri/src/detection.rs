@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
-type IndexedImage = (String, String, String, u32, u32);
+pub(crate) type IndexedImage = (String, String, String, u32, u32);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -927,7 +927,11 @@ fn validate_annotation(
     validate_geometry(geometry, width, height)
 }
 
-fn validate_geometry(g: BboxGeometry, image_width: u32, image_height: u32) -> Result<(), String> {
+pub(crate) fn validate_geometry(
+    g: BboxGeometry,
+    image_width: u32,
+    image_height: u32,
+) -> Result<(), String> {
     if !g.x.is_finite()
         || !g.y.is_finite()
         || !g.width.is_finite()
@@ -995,7 +999,7 @@ fn parse_yolo_line(
     })
 }
 
-fn classes_from_connection(connection: &Connection) -> Result<Vec<ClassRecord>, String> {
+pub(crate) fn classes_from_connection(connection: &Connection) -> Result<Vec<ClassRecord>, String> {
     let mut statement = connection
         .prepare("SELECT id, name, position, color, shortcut FROM classes ORDER BY position")
         .map_err(|error| format!("Could not prepare classes: {error}"))?;
@@ -1014,7 +1018,10 @@ fn classes_from_connection(connection: &Connection) -> Result<Vec<ClassRecord>, 
         .map_err(|error| format!("Could not read a class: {error}"))
 }
 
-fn class_by_id(connection: &Connection, id: &str) -> Result<Option<ClassRecord>, String> {
+pub(crate) fn class_by_id(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<ClassRecord>, String> {
     connection
         .query_row(
             "SELECT id, name, position, color, shortcut FROM classes WHERE id = ?1",
@@ -1066,7 +1073,7 @@ fn compact_class_positions(transaction: &Transaction<'_>) -> Result<(), String> 
     Ok(())
 }
 
-fn image_lookup(connection: &Connection) -> Result<Vec<IndexedImage>, String> {
+pub(crate) fn image_lookup(connection: &Connection) -> Result<Vec<IndexedImage>, String> {
     let mut statement = connection.prepare("SELECT id, relative_path, file_name, width, height FROM images WHERE status = 'active' ORDER BY sort_order").map_err(|error| format!("Could not inspect project images: {error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -1101,7 +1108,10 @@ fn require_spatial_task(connection: &Connection) -> Result<(), String> {
             row.get(0)
         })
         .map_err(|error| format!("Could not read the project task: {error}"))?;
-    if task != "detection" && task != "segmentation" && task != "classification" {
+    if !matches!(
+        task.as_str(),
+        "detection" | "segmentation" | "classification" | "keypoints"
+    ) {
         return Err("This operation is only available in an annotation project.".to_owned());
     }
     Ok(())
@@ -1158,14 +1168,14 @@ fn spectrum_color(position: usize) -> String {
     COLORS[position % COLORS.len()].to_owned()
 }
 
-fn touch_project(transaction: &Transaction<'_>, now: i64) -> Result<(), String> {
+pub(crate) fn touch_project(transaction: &Transaction<'_>, now: i64) -> Result<(), String> {
     transaction
         .execute("UPDATE project SET updated_at_ms = ?1", [now])
         .map(|_| ())
         .map_err(|error| format!("Could not update project state: {error}"))
 }
 
-fn with_txt_extension(relative: &str) -> String {
+pub(crate) fn with_txt_extension(relative: &str) -> String {
     let mut path = PathBuf::from(relative);
     path.set_extension("txt");
     path.to_string_lossy().replace('\\', "/")

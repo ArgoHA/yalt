@@ -3,14 +3,18 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as backend from "../backend";
-import type { AnnotationRecord, ImageRecord, ProjectSummary } from "../types";
+import { UNLABELED } from "../editor/keypoints";
+import type { AnnotationRecord, KeypointAnnotationRecord, ImageRecord, ProjectSummary } from "../types";
+import type { CanvasStage } from "./CanvasStage";
 import { ProjectWorkspace } from "./ProjectWorkspace";
 
-const canvas = vi.hoisted(() => ({ removeLastDraftPoint: vi.fn(), cancelDraft: vi.fn() }));
+type CanvasProps = Parameters<typeof CanvasStage>[0];
+const canvas = vi.hoisted(() => ({ removeLastDraftPoint: vi.fn(), cancelDraft: vi.fn(), finishDraft: vi.fn(), props: null as CanvasProps | null }));
 const cache = vi.hoisted(() => ({ load: vi.fn(), clear: vi.fn() }));
 vi.mock("./CanvasStage", async () => {
   const { forwardRef, useImperativeHandle } = await import("react");
-  return { CanvasStage: forwardRef((_props, ref) => {
+  return { CanvasStage: forwardRef((props: CanvasProps, ref) => {
+    canvas.props = props;
     useImperativeHandle(ref, () => canvas);
     return <div data-testid="canvas" />;
   }) };
@@ -66,8 +70,8 @@ describe("workspace interactions", () => {
     host.remove();
     vi.unstubAllGlobals();
   });
-  async function mount() {
-    await act(async () => { root.render(<ProjectWorkspace project={project} onProjectChange={vi.fn()} onClose={vi.fn()} />); });
+  async function mount(current = project) {
+    await act(async () => { root.render(<ProjectWorkspace project={current} onProjectChange={vi.fn()} onClose={vi.fn()} />); });
     expect(host.querySelector('[data-testid="canvas"]')).not.toBeNull();
   }
   async function press(target: EventTarget, key: string) {
@@ -119,6 +123,39 @@ describe("workspace interactions", () => {
     expect(host.querySelector(".image-row.active")?.textContent).toContain("second.jpg");
     await act(async () => finishDelete());
     expect(host.querySelectorAll(".annotation-list button")).toHaveLength(0);
+  });
+
+  it("walks keypoint placement with skip, step back, and finish keys", async () => {
+    const pose: KeypointAnnotationRecord = {
+      id: "pose", imageId: "first", classId: "class", kind: "keypoints", isVisible: true, createdAtMs: 0, updatedAtMs: 0,
+      geometry: { bbox: { x: 1, y: 1, width: 20, height: 20 }, keypoints: [UNLABELED, UNLABELED, UNLABELED] },
+    };
+    vi.mocked(backend.getKeypointSchema).mockResolvedValue({ names: ["head", "tail", "fin"], skeleton: [] });
+    vi.mocked(backend.listKeypointAnnotations).mockResolvedValue([]);
+    vi.mocked(backend.createKeypointAnnotation).mockResolvedValue(pose);
+    vi.mocked(backend.updateKeypointAnnotation).mockImplementation(async (_root, _id, _class, geometry) => ({ ...pose, geometry }));
+    await mount({ ...project, taskType: "keypoints" });
+    const placement = () => canvas.props?.keypointPlacement;
+
+    await act(async () => canvas.props?.onCreateBox(pose.geometry.bbox, "class"));
+    expect(placement()).toEqual({ annotationId: "pose", index: 0 });
+    await press(window, "s");
+    expect(placement()).toEqual({ annotationId: "pose", index: 1 });
+
+    // A canvas click places "tail" and advances, as CanvasStage reports it.
+    const placed = { ...pose.geometry, keypoints: [UNLABELED, { x: 5, y: 5, v: 2 }, UNLABELED] };
+    await act(async () => {
+      canvas.props?.onUpdateKeypoints?.(pose, placed);
+      canvas.props?.onKeypointPlacementChange?.({ annotationId: "pose", index: 2 });
+    });
+    await press(window, "Backspace");
+    expect(placement()).toEqual({ annotationId: "pose", index: 1 });
+    expect(vi.mocked(backend.updateKeypointAnnotation).mock.lastCall?.[3].keypoints).toEqual([UNLABELED, UNLABELED, UNLABELED]);
+    expect(backend.deleteKeypointAnnotation).not.toHaveBeenCalled();
+
+    await press(window, "Enter");
+    expect(placement()).toBeNull();
+    expect(host.querySelector(".island-button")?.textContent).toContain("Place 3 missing points");
   });
 
   it("discards cached image bytes when rescanning changed source files", async () => {

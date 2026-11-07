@@ -2,7 +2,7 @@ use rusqlite::{Connection, Transaction};
 use std::fs;
 use std::path::Path;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 4;
+pub const CURRENT_SCHEMA_VERSION: i64 = 5;
 
 const MIGRATION_1: &str = r#"
 CREATE TABLE project (
@@ -130,6 +130,42 @@ CREATE TABLE classification_file_operations (
 CREATE INDEX image_classes_class_idx ON image_classes(class_id);
 "#;
 
+// SQLite cannot alter CHECK constraints, so the two tables that gain the
+// keypoints task and annotation kind are rebuilt. Nothing references them.
+const MIGRATION_5: &str = r#"
+CREATE TABLE project_v5 (
+    id                  TEXT PRIMARY KEY NOT NULL,
+    name                TEXT NOT NULL,
+    task_type           TEXT NOT NULL CHECK(task_type IN ('detection', 'segmentation', 'classification', 'keypoints')),
+    classification_mode TEXT CHECK(classification_mode IS NULL OR classification_mode IN ('single', 'multi')),
+    root_path           TEXT NOT NULL,
+    created_at_ms       INTEGER NOT NULL,
+    updated_at_ms       INTEGER NOT NULL,
+    last_image_id       TEXT
+);
+INSERT INTO project_v5 (id, name, task_type, classification_mode, root_path, created_at_ms, updated_at_ms, last_image_id)
+    SELECT id, name, task_type, classification_mode, root_path, created_at_ms, updated_at_ms, last_image_id FROM project;
+DROP TABLE project;
+ALTER TABLE project_v5 RENAME TO project;
+
+CREATE TABLE annotations_v5 (
+    id            TEXT PRIMARY KEY NOT NULL,
+    image_id      TEXT NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+    class_id      TEXT NOT NULL REFERENCES classes(id),
+    kind          TEXT NOT NULL CHECK(kind IN ('bbox', 'polygon', 'keypoints')),
+    geometry_json TEXT NOT NULL,
+    is_visible    INTEGER NOT NULL DEFAULT 1,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+INSERT INTO annotations_v5 (id, image_id, class_id, kind, geometry_json, is_visible, created_at_ms, updated_at_ms)
+    SELECT id, image_id, class_id, kind, geometry_json, is_visible, created_at_ms, updated_at_ms FROM annotations ORDER BY rowid;
+DROP TABLE annotations;
+ALTER TABLE annotations_v5 RENAME TO annotations;
+CREATE INDEX annotations_image_idx ON annotations(image_id);
+CREATE INDEX annotations_image_kind_idx ON annotations(image_id, kind);
+"#;
+
 pub fn configure_connection(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
@@ -177,6 +213,9 @@ pub fn migrate(connection: &mut Connection, database_path: &Path) -> Result<(), 
     if current_version < 4 {
         apply_migration(connection, 4, MIGRATION_4)?;
     }
+    if current_version < 5 {
+        apply_migration(connection, 5, MIGRATION_5)?;
+    }
 
     Ok(())
 }
@@ -219,7 +258,10 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("schema version");
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
-        assert!(directory.path().join("project.before-v4.sqlite").is_file());
+        assert!(directory
+            .path()
+            .join(format!("project.before-v{CURRENT_SCHEMA_VERSION}.sqlite"))
+            .is_file());
         let viewport_table: String = connection
             .query_row(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'image_viewports'",
@@ -228,5 +270,54 @@ mod tests {
             )
             .expect("viewport table");
         assert_eq!(viewport_table, "image_viewports");
+    }
+
+    #[test]
+    fn version_five_keeps_annotations_and_accepts_keypoints() {
+        let directory = TempDir::new().expect("temporary directory");
+        let path = directory.path().join("project.sqlite");
+        let mut connection = Connection::open(&path).expect("database");
+        configure_connection(&connection).expect("configure");
+        for (version, sql) in [
+            (1, MIGRATION_1),
+            (2, MIGRATION_2),
+            (3, MIGRATION_3),
+            (4, MIGRATION_4),
+        ] {
+            apply_migration(&mut connection, version, sql).expect("older schema");
+        }
+        connection
+            .execute_batch(
+                "INSERT INTO project VALUES ('p', 'Old', 'detection', NULL, '/old', 1, 1, NULL);
+                 INSERT INTO classes VALUES ('c', 'car', 0, '#fff', '1', 1, 1);
+                 INSERT INTO images (id, relative_path, file_name, width, height, byte_size, modified_at_ms, sort_order, created_at_ms, updated_at_ms)
+                     VALUES ('i', 'a.jpg', 'a.jpg', 10, 10, 1, 1, 0, 1, 1);
+                 INSERT INTO annotations VALUES ('a', 'i', 'c', 'bbox', '{}', 1, 1, 1);",
+            )
+            .expect("v4 rows");
+        migrate(&mut connection, &path).expect("v5 migration");
+
+        let kept: (String, String) = connection
+            .query_row(
+                "SELECT p.task_type, a.kind FROM project p, annotations a",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("rows survive");
+        assert_eq!(kept, ("detection".to_owned(), "bbox".to_owned()));
+        connection
+            .execute_batch(
+                "UPDATE project SET task_type = 'keypoints';
+                 INSERT INTO annotations VALUES ('k', 'i', 'c', 'keypoints', '{}', 1, 2, 2);",
+            )
+            .expect("keypoints are allowed");
+        let indexes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'annotations' AND name LIKE 'annotations_image%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("indexes");
+        assert_eq!(indexes, 2);
     }
 }

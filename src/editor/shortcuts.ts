@@ -7,6 +7,7 @@ export type CustomShortcutId =
   | "rectangle"
   | "polygon"
   | "island"
+  | "skipKeypoint"
   | "previousClass"
   | "nextClass";
 
@@ -18,6 +19,7 @@ export const DEFAULT_SHORTCUTS: ShortcutMap = {
   rectangle: "r",
   polygon: "p",
   island: "i",
+  skipKeypoint: "s",
   previousClass: "[",
   nextClass: "]",
 };
@@ -28,6 +30,7 @@ export const SHORTCUT_FIELDS: ReadonlyArray<{ id: CustomShortcutId; label: strin
   { id: "rectangle", label: "Draw box" },
   { id: "polygon", label: "Draw polygon" },
   { id: "island", label: "Add polygon island" },
+  { id: "skipKeypoint", label: "Skip keypoint" },
   { id: "previousClass", label: "Previous class" },
   { id: "nextClass", label: "Next class" },
 ];

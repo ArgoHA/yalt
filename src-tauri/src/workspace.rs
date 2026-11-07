@@ -292,6 +292,10 @@ fn apply_history(root_path: &str, undo: bool) -> Result<Option<String>, String> 
         crate::detection::apply_annotation_history(&mut connection, sequence, &json, undo)?;
         return Ok(affected_image_id);
     }
+    if crate::keypoints::is_keypoint_operation(&json) {
+        crate::keypoints::apply_keypoint_history(&mut connection, sequence, &json, undo)?;
+        return Ok(affected_image_id);
+    }
     if crate::segmentation::is_polygon_operation(&json) {
         crate::segmentation::apply_polygon_history(&mut connection, sequence, &json, undo)?;
         return Ok(affected_image_id);

@@ -5,6 +5,16 @@ import {
   createBboxAnnotation,
   createPolygonAnnotation,
   createDetectionClass,
+  createKeypointAnnotation,
+  deleteKeypointAnnotation,
+  exportCocoKeypoints,
+  exportYoloKeypoints,
+  getKeypointSchema,
+  importCocoKeypoints,
+  importYoloKeypoints,
+  listKeypointAnnotations,
+  setKeypointSchema as saveKeypointSchema,
+  updateKeypointAnnotation,
   deleteBboxAnnotation,
   deleteDetectionClass,
   deleteProjectImage,
@@ -47,6 +57,7 @@ import {
 } from "../backend";
 import { ImageUrlCache } from "../editor/imageCache";
 import { geometryArea, geometryWarnings } from "../editor/polygons";
+import { isLabeled, labeledCount, nextUnlabeled, parseKeypointNames, setKeypoint, UNLABELED } from "../editor/keypoints";
 import { isTypingTarget, loadShortcuts, matchesShortcut, saveShortcuts, shortcutLabel, type ShortcutMap } from "../editor/shortcuts";
 import type {
   AnnotationDraft,
@@ -57,9 +68,15 @@ import type {
   EditorTool,
   HistoryState,
   ImageRecord,
+  ImportReport,
+  KeypointAnnotationRecord,
+  KeypointGeometry,
+  KeypointPlacement,
+  KeypointSchema,
   ProjectSummary,
   PolygonAnnotationRecord,
   PolygonGeometry,
+  TaskType,
   ViewportSnapshot,
 } from "../types";
 import type { Point } from "../editor/viewport";
@@ -67,11 +84,38 @@ import { CanvasStage, type CanvasStageHandle } from "./CanvasStage";
 import { VirtualImageList } from "./VirtualImageList";
 import { ShortcutSettings } from "./ShortcutSettings";
 
-const TASK_LABELS = {
+const TASK_LABELS: Record<TaskType, string> = {
   detection: "Object detection",
   segmentation: "Polygon segmentation",
   classification: "Image classification",
+  keypoints: "Keypoint estimation",
 };
+
+type SpatialExchange = "yolo-import" | "yolo-export" | "coco-import" | "coco-export"
+  | "yolo-polygon-import" | "yolo-polygon-export" | "coco-polygon-import" | "coco-polygon-export"
+  | "yolo-keypoints-import" | "yolo-keypoints-export" | "coco-keypoints-import" | "coco-keypoints-export";
+
+const SPATIAL_EXCHANGES: Record<SpatialExchange, (rootPath: string, path: string) => Promise<ImportReport>> = {
+  "yolo-import": importYoloAnnotations,
+  "yolo-export": exportYoloAnnotations,
+  "coco-import": importCocoAnnotations,
+  "coco-export": exportCocoAnnotations,
+  "yolo-polygon-import": importYoloPolygons,
+  "yolo-polygon-export": exportYoloPolygons,
+  "coco-polygon-import": importCocoPolygons,
+  "coco-polygon-export": exportCocoPolygons,
+  "yolo-keypoints-import": importYoloKeypoints,
+  "yolo-keypoints-export": exportYoloKeypoints,
+  "coco-keypoints-import": importCocoKeypoints,
+  "coco-keypoints-export": exportCocoKeypoints,
+};
+
+function listAnnotations(taskType: TaskType, rootPath: string, imageId: string): Promise<AnnotationRecord[]> {
+  if (taskType === "detection") return listImageAnnotations(rootPath, imageId);
+  if (taskType === "segmentation") return listPolygonAnnotations(rootPath, imageId);
+  if (taskType === "keypoints") return listKeypointAnnotations(rootPath, imageId);
+  return Promise.resolve([]);
+}
 
 const IMAGE_DELETE_SEQUENCE_MS = 800;
 
@@ -112,7 +156,7 @@ function message(error: unknown): string {
 }
 
 function initialTool(project: ProjectSummary): EditorTool {
-  if (project.taskType === "detection") return "rectangle";
+  if (project.taskType === "detection" || project.taskType === "keypoints") return "rectangle";
   if (project.taskType === "segmentation") return "polygon";
   return "select";
 }
@@ -142,6 +186,9 @@ export function ProjectWorkspace({
   const [annotationsLoadedId, setAnnotationsLoadedId] = useState<string | null>(null);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [appendPolygonToId, setAppendPolygonToId] = useState<string | null>(null);
+  const [keypointSchema, setKeypointSchemaState] = useState<KeypointSchema | null>(null);
+  const [keypointPlacement, setKeypointPlacement] = useState<KeypointPlacement | null>(null);
+  const [keypointNamesDraft, setKeypointNamesDraft] = useState<string | null>(null);
   const [restoredDraft, setRestoredDraft] = useState<AnnotationDraft | null | undefined>(undefined);
   const [newClassName, setNewClassName] = useState("");
   const [editingClassId, setEditingClassId] = useState<string | null>(null);
@@ -163,6 +210,8 @@ export function ProjectWorkspace({
   const pendingViewportSave = useRef<{ imageId: string; snapshot: ViewportSnapshot } | null>(null);
   const workspaceSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const draftSaveQueue = useRef<Promise<void>>(Promise.resolve());
+  // Keypoint edits apply optimistically, so their writes must reach the backend in order.
+  const keypointWriteQueue = useRef<Promise<unknown>>(Promise.resolve());
   const selectedIdRef = useRef(selectedId);
   const activeClassSaveQueue = useRef<Promise<void>>(Promise.resolve());
   const initialLastImageId = useRef(project.lastImageId);
@@ -173,6 +222,8 @@ export function ProjectWorkspace({
   const activePosition = selected ? activeImages.findIndex((image) => image.id === selected.id) : -1;
   const activeClass = useMemo(() => classes.find((item) => item.id === activeClassId) ?? null, [activeClassId, classes]);
   const selectedAnnotation = useMemo(() => annotations.find((item) => item.id === selectedAnnotationId) ?? null, [annotations, selectedAnnotationId]);
+  const keypointCount = keypointSchema?.names.length ?? 0;
+  const selectedKeypoints = selectedAnnotation?.kind === "keypoints" ? selectedAnnotation : null;
 
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
   useEffect(() => { pendingImageDeleteAtRef.current = null; }, [selectedId]);
@@ -231,9 +282,13 @@ export function ProjectWorkspace({
       setLabeledImageCount(state.labeledImageCount);
       setActiveClassId((current) => current && state.classes.some((item) => item.id === current) ? current : state.classes[0]?.id ?? null);
     } else {
-      const state = await getDetectionState(project.rootPath);
+      const [state, schema] = await Promise.all([
+        getDetectionState(project.rootPath),
+        project.taskType === "keypoints" ? getKeypointSchema(project.rootPath) : Promise.resolve(null),
+      ]);
       setClasses(state.classes);
       setActiveClassId(state.activeClassId);
+      setKeypointSchemaState(schema);
     }
   }, [project.rootPath, project.taskType]);
 
@@ -255,6 +310,7 @@ export function ProjectWorkspace({
     setAnnotations([]);
     setAnnotationsLoadedId(null);
     setSelectedAnnotationId(null);
+    setKeypointPlacement(null);
     setImageClassIds([]);
     setPointer(null);
     if (!selected || selected.status !== "active") {
@@ -267,8 +323,7 @@ export function ProjectWorkspace({
     Promise.all([
       cacheRef.current.load(project.rootPath, selected),
       loadViewportState(project.rootPath, selected.id),
-      project.taskType === "detection" ? listImageAnnotations(project.rootPath, selected.id)
-        : project.taskType === "segmentation" ? listPolygonAnnotations(project.rootPath, selected.id) : Promise.resolve([]),
+      listAnnotations(project.taskType, project.rootPath, selected.id),
       project.taskType === "detection" ? loadBboxDraft(project.rootPath, selected.id)
         : project.taskType === "segmentation" ? loadPolygonDraft(project.rootPath, selected.id) : Promise.resolve(null),
       project.taskType === "classification" ? getClassificationState(project.rootPath, selected.id) : Promise.resolve(null),
@@ -313,12 +368,11 @@ export function ProjectWorkspace({
   const refreshAfterHistory = useCallback(async (preferredId?: string | null) => {
     await reloadMetadata(preferredId);
     const imageId = preferredId ?? selectedId;
-    if ((project.taskType === "detection" || project.taskType === "segmentation") && imageId) {
-      setAnnotations(project.taskType === "detection"
-        ? await listImageAnnotations(project.rootPath, imageId)
-        : await listPolygonAnnotations(project.rootPath, imageId));
+    if (project.taskType !== "classification" && imageId) {
+      setAnnotations(await listAnnotations(project.taskType, project.rootPath, imageId));
       setAnnotationsLoadedId(imageId);
       setSelectedAnnotationId(null);
+      setKeypointPlacement(null);
     } else if (project.taskType === "classification" && imageId) {
       const state = await getClassificationState(project.rootPath, imageId);
       setClasses(state.classes);
@@ -332,6 +386,7 @@ export function ProjectWorkspace({
     if (busy || !history.canUndo) return;
     setBusy(true);
     try {
+      await keypointWriteQueue.current.catch(() => undefined);
       const affectedImageId = await undoProjectOperation(project.rootPath);
       if (affectedImageId) await refreshAfterHistory(affectedImageId);
     } catch (reason) {
@@ -345,6 +400,7 @@ export function ProjectWorkspace({
     if (busy || !history.canRedo) return;
     setBusy(true);
     try {
+      await keypointWriteQueue.current.catch(() => undefined);
       const affectedImageId = await redoProjectOperation(project.rootPath);
       if (affectedImageId) await refreshAfterHistory(affectedImageId);
     } catch (reason) {
@@ -414,13 +470,21 @@ export function ProjectWorkspace({
   }, [busy, commitProject, project.rootPath, reloadMetadata]);
 
   const refreshHistoryState = useCallback(async () => {
-    setHistory(await getHistoryState(project.rootPath));
+    const next = await getHistoryState(project.rootPath);
+    setHistory((current) => current.canUndo === next.canUndo && current.canRedo === next.canRedo ? current : next);
   }, [project.rootPath]);
+
+  const queueKeypointWrite = useCallback(<T,>(write: () => Promise<T>): Promise<T> => {
+    const next = keypointWriteQueue.current.catch(() => undefined).then(write);
+    keypointWriteQueue.current = next;
+    return next;
+  }, []);
 
   const chooseClass = useCallback((classId: string, enterDrawMode = true) => {
     setAppendPolygonToId(null);
     setActiveClassId(classId);
-    if (enterDrawMode && project.taskType === "detection") setActiveTool("rectangle");
+    if (enterDrawMode) setKeypointPlacement(null);
+    if (enterDrawMode && (project.taskType === "detection" || project.taskType === "keypoints")) setActiveTool("rectangle");
     if (enterDrawMode && project.taskType === "segmentation") setActiveTool("polygon");
     const next = activeClassSaveQueue.current.catch(() => undefined).then(() => setActiveDetectionClass(project.rootPath, classId));
     activeClassSaveQueue.current = next;
@@ -531,16 +595,22 @@ export function ProjectWorkspace({
     const imageId = selected.id;
     try {
       await draftSaveQueue.current.catch(() => undefined);
-      const created = await createBboxAnnotation(project.rootPath, imageId, classId, geometry);
+      const created = project.taskType === "keypoints"
+        ? await queueKeypointWrite(() => createKeypointAnnotation(project.rootPath, imageId, classId, { bbox: geometry, keypoints: [] }))
+        : await createBboxAnnotation(project.rootPath, imageId, classId, geometry);
       if (selectedIdRef.current === imageId) {
         setAnnotations((current) => [...current, created]);
         setSelectedAnnotationId(created.id);
+        // A new keypoint object goes straight into placing its first point.
+        if (created.kind === "keypoints" && created.geometry.keypoints.length > 0) {
+          setKeypointPlacement({ annotationId: created.id, index: 0 });
+        }
       }
       await refreshHistoryState();
     } catch (reason) {
       setError(message(reason));
     }
-  }, [project.rootPath, refreshHistoryState, selected]);
+  }, [project.rootPath, project.taskType, queueKeypointWrite, refreshHistoryState, selected]);
 
   const updateBoxGeometry = useCallback(async (annotation: BboxAnnotationRecord, geometry: BboxGeometry) => {
     try {
@@ -593,27 +663,106 @@ export function ProjectWorkspace({
     }
   }, [project.rootPath, refreshHistoryState, selected]);
 
+  const updateKeypointGeometry = useCallback((annotation: KeypointAnnotationRecord, geometry: KeypointGeometry) => {
+    const imageId = annotation.imageId;
+    setAnnotations((current) => current.map((item) => item.id === annotation.id ? { ...annotation, geometry } : item));
+    void queueKeypointWrite(() => updateKeypointAnnotation(project.rootPath, annotation.id, annotation.classId, geometry, annotation.isVisible))
+      .then(refreshHistoryState)
+      .catch(async (reason) => {
+        setError(message(reason));
+        setKeypointPlacement(null);
+        if (selectedIdRef.current === imageId) setAnnotations(await listKeypointAnnotations(project.rootPath, imageId));
+      });
+  }, [project.rootPath, queueKeypointWrite, refreshHistoryState]);
+
+  /** Places points on the selected object: one slot, or every missing slot from the first. */
+  const startKeypointPlacement = useCallback((index: number | null) => {
+    if (!selectedKeypoints) return;
+    const target = index ?? nextUnlabeled(selectedKeypoints.geometry, keypointCount, -1);
+    if (target === null) return;
+    canvasRef.current?.cancelDraft();
+    setAppendPolygonToId(null);
+    setActiveTool("rectangle");
+    setKeypointPlacement({ annotationId: selectedKeypoints.id, index: target, single: index !== null && isLabeled(selectedKeypoints.geometry, index) });
+  }, [keypointCount, selectedKeypoints]);
+
+  const skipKeypoint = useCallback(() => {
+    const annotation = annotations.find((item) => item.id === keypointPlacement?.annotationId);
+    if (!keypointPlacement || annotation?.kind !== "keypoints" || keypointPlacement.single) {
+      setKeypointPlacement(null);
+      return;
+    }
+    const next = nextUnlabeled(annotation.geometry, keypointCount, keypointPlacement.index);
+    setKeypointPlacement(next === null ? null : { annotationId: annotation.id, index: next });
+  }, [annotations, keypointCount, keypointPlacement]);
+
+  /** Backspace while placing: clear the previous slot and place it again. False at the first slot. */
+  const stepBackKeypoint = useCallback(() => {
+    const annotation = annotations.find((item) => item.id === keypointPlacement?.annotationId);
+    if (!keypointPlacement || annotation?.kind !== "keypoints") return false;
+    if (keypointPlacement.single) {
+      setKeypointPlacement(null);
+      return true;
+    }
+    if (keypointPlacement.index === 0) return false;
+    const index = keypointPlacement.index - 1;
+    if (isLabeled(annotation.geometry, index)) updateKeypointGeometry(annotation, setKeypoint(annotation.geometry, keypointCount, index, UNLABELED));
+    setKeypointPlacement({ annotationId: annotation.id, index });
+    return true;
+  }, [annotations, keypointCount, keypointPlacement, updateKeypointGeometry]);
+
+  const changeKeypoint = useCallback((index: number, change: "toggle" | "clear") => {
+    if (!selectedKeypoints) return;
+    const current = selectedKeypoints.geometry.keypoints[index] ?? UNLABELED;
+    if (current.v === 0) return;
+    const next = change === "clear" ? UNLABELED : { ...current, v: current.v === 1 ? 2 : 1 };
+    updateKeypointGeometry(selectedKeypoints, setKeypoint(selectedKeypoints.geometry, keypointCount, index, next));
+  }, [keypointCount, selectedKeypoints, updateKeypointGeometry]);
+
+  const saveKeypointNames = useCallback(async () => {
+    if (keypointNamesDraft === null) return;
+    try {
+      const saved = await saveKeypointSchema(project.rootPath, {
+        names: parseKeypointNames(keypointNamesDraft),
+        skeleton: keypointSchema?.skeleton ?? [],
+      });
+      setKeypointSchemaState(saved);
+      setKeypointNamesDraft(null);
+      setKeypointPlacement(null);
+      if (selected?.status === "active") setAnnotations(await listKeypointAnnotations(project.rootPath, selected.id));
+    } catch (reason) {
+      setError(message(reason));
+    }
+  }, [keypointNamesDraft, keypointSchema, project.rootPath, selected]);
+
   const changeSelectedAnnotation = useCallback(async (changes: { classId?: string; isVisible?: boolean }) => {
     if (!selectedAnnotation) return;
     try {
       const classId = changes.classId ?? selectedAnnotation.classId;
       const isVisible = changes.isVisible ?? selectedAnnotation.isVisible;
-      const updated = selectedAnnotation.kind === "bbox"
-        ? await updateBboxAnnotation(project.rootPath, selectedAnnotation.id, classId, selectedAnnotation.geometry, isVisible)
-        : await updatePolygonAnnotation(project.rootPath, selectedAnnotation.id, classId, selectedAnnotation.geometry, isVisible);
+      const annotation = selectedAnnotation;
+      const updated = annotation.kind === "bbox"
+        ? await updateBboxAnnotation(project.rootPath, annotation.id, classId, annotation.geometry, isVisible)
+        : annotation.kind === "polygon"
+          ? await updatePolygonAnnotation(project.rootPath, annotation.id, classId, annotation.geometry, isVisible)
+          : await queueKeypointWrite(() => updateKeypointAnnotation(project.rootPath, annotation.id, classId, annotation.geometry, isVisible));
       setAnnotations((current) => current.map((item) => item.id === updated.id ? updated : item));
       if (changes.classId) chooseClass(changes.classId, false);
       await refreshHistoryState();
     } catch (reason) {
       setError(message(reason));
     }
-  }, [chooseClass, project.rootPath, refreshHistoryState, selectedAnnotation]);
+  }, [chooseClass, project.rootPath, queueKeypointWrite, refreshHistoryState, selectedAnnotation]);
 
   const removeAnnotation = useCallback(async (annotation: AnnotationRecord | null = selectedAnnotation) => {
     if (!annotation) return;
     try {
       if (annotation.kind === "bbox") await deleteBboxAnnotation(project.rootPath, annotation.id);
-      else await deletePolygonAnnotation(project.rootPath, annotation.id);
+      else if (annotation.kind === "polygon") await deletePolygonAnnotation(project.rootPath, annotation.id);
+      else {
+        await queueKeypointWrite(() => deleteKeypointAnnotation(project.rootPath, annotation.id));
+        setKeypointPlacement((current) => current?.annotationId === annotation.id ? null : current);
+      }
       const remaining = annotations.filter((item) => item.id !== annotation.id);
       if (selectedIdRef.current === annotation.imageId) {
         setAnnotations((current) => current.filter((item) => item.id !== annotation.id));
@@ -623,12 +772,13 @@ export function ProjectWorkspace({
     } catch (reason) {
       setError(message(reason));
     }
-  }, [annotations, project.rootPath, refreshHistoryState, selectedAnnotation]);
+  }, [annotations, project.rootPath, queueKeypointWrite, refreshHistoryState, selectedAnnotation]);
 
   const changeDraft = useCallback((draft: AnnotationDraft | null) => {
     if (!selected) return;
     if (!draft) setAppendPolygonToId(null);
     setRestoredDraft(draft);
+    if (project.taskType === "keypoints") return;
     const next = draftSaveQueue.current.catch(() => undefined).then(() => project.taskType === "segmentation"
       ? savePolygonDraft(project.rootPath, selected.id, draft && "points" in draft ? draft : null)
       : saveBboxDraft(project.rootPath, selected.id, draft && "x" in draft ? draft : null));
@@ -636,7 +786,7 @@ export function ProjectWorkspace({
     void next.catch((reason) => setError(message(reason)));
   }, [project.rootPath, project.taskType, selected]);
 
-  const runExchange = useCallback(async (kind: "labels" | "yolo-import" | "yolo-export" | "yolo-polygon-import" | "yolo-polygon-export" | "coco-import" | "coco-export" | "coco-polygon-import" | "coco-polygon-export" | "classification-csv-import" | "classification-csv-export" | "class-directories-import" | "class-directories-export") => {
+  const runExchange = useCallback(async (kind: "labels" | SpatialExchange | "classification-csv-import" | "classification-csv-export" | "class-directories-import" | "class-directories-export") => {
     if (busy) return;
     setShowProjectMenu(false);
     let selectedPath: string | null = null;
@@ -653,12 +803,12 @@ export function ProjectWorkspace({
     } else if (kind === "labels") {
       const result = await openDialog({ multiple: false, filters: [{ name: "Labels", extensions: ["txt"] }], title: "Load labels.txt" });
       selectedPath = typeof result === "string" ? result : null;
-    } else if (kind === "yolo-import" || kind === "yolo-polygon-import") {
+    } else if (kind.startsWith("yolo-") && kind.endsWith("-import")) {
       const result = await openDialog({ directory: true, multiple: false, title: "Choose YOLO labels folder" });
       selectedPath = typeof result === "string" ? result : null;
-    } else if (kind === "yolo-export" || kind === "yolo-polygon-export") {
+    } else if (kind.startsWith("yolo-")) {
       selectedPath = await saveDialog({ defaultPath: "labels-yolo", title: "Create YOLO export folder" });
-    } else if (kind === "coco-import" || kind === "coco-polygon-import") {
+    } else if (kind.endsWith("-import")) {
       const result = await openDialog({ multiple: false, filters: [{ name: "COCO JSON", extensions: ["json"] }], title: "Import COCO annotations" });
       selectedPath = typeof result === "string" ? result : null;
     } else {
@@ -686,20 +836,12 @@ export function ProjectWorkspace({
         const state = await importDetectionLabels(project.rootPath, selectedPath);
         setClasses(state.classes); setActiveClassId(state.activeClassId); setNotice({ text: `Loaded ${state.classes.length} classes.`, undoable: false });
       } else {
-        const report = kind === "yolo-import" ? await importYoloAnnotations(project.rootPath, selectedPath)
-          : kind === "yolo-export" ? await exportYoloAnnotations(project.rootPath, selectedPath)
-            : kind === "yolo-polygon-import" ? await importYoloPolygons(project.rootPath, selectedPath)
-              : kind === "yolo-polygon-export" ? await exportYoloPolygons(project.rootPath, selectedPath)
-                : kind === "coco-import" ? await importCocoAnnotations(project.rootPath, selectedPath)
-                  : kind === "coco-export" ? await exportCocoAnnotations(project.rootPath, selectedPath)
-                    : kind === "coco-polygon-import" ? await importCocoPolygons(project.rootPath, selectedPath)
-                      : await exportCocoPolygons(project.rootPath, selectedPath);
+        const report = await SPATIAL_EXCHANGES[kind as SpatialExchange](project.rootPath, selectedPath);
         setNotice({ text: report.message, undoable: kind.endsWith("import") });
         if (kind.endsWith("import")) {
+          setKeypointPlacement(null);
           await reloadSpatialState();
-          if (selected) setAnnotations(project.taskType === "segmentation"
-            ? await listPolygonAnnotations(project.rootPath, selected.id)
-            : await listImageAnnotations(project.rootPath, selected.id));
+          if (selected) setAnnotations(await listAnnotations(project.taskType, project.rootPath, selected.id));
           await refreshHistoryState();
         }
       }
@@ -711,7 +853,7 @@ export function ProjectWorkspace({
   }, [busy, project.rootPath, project.taskType, refreshHistoryState, reloadSpatialState, selected]);
 
   const allowedTools = useMemo<EditorTool[]>(() => {
-    if (project.taskType === "detection") return ["select", "rectangle"];
+    if (project.taskType === "detection" || project.taskType === "keypoints") return ["select", "rectangle"];
     if (project.taskType === "segmentation") return ["select", "polygon"];
     return ["select"];
   }, [project.taskType]);
@@ -719,6 +861,7 @@ export function ProjectWorkspace({
   const activateTool = useCallback((tool: EditorTool) => {
     if (tool !== activeTool || appendPolygonToId) canvasRef.current?.cancelDraft();
     setAppendPolygonToId(null);
+    setKeypointPlacement(null);
     setActiveTool(tool);
   }, [activeTool, appendPolygonToId]);
 
@@ -751,14 +894,19 @@ export function ProjectWorkspace({
         canvasRef.current?.zoomOut();
       } else if (event.key === "Enter" && canvasRef.current?.finishDraft()) {
         event.preventDefault();
+      } else if (event.key === "Enter" && keypointPlacement) {
+        event.preventDefault();
+        setKeypointPlacement(null);
       } else if (event.key === "Backspace" || event.key === "Delete") {
         event.preventDefault();
         if (canvasRef.current?.removeLastDraftPoint()) return;
+        if (stepBackKeypoint()) return;
         if (event.repeat) return;
         void removeAnnotation(selectedAnnotation ?? annotations.at(-1) ?? null);
       } else if (event.key === "Escape") {
         canvasRef.current?.cancelDraft();
         setAppendPolygonToId(null);
+        setKeypointPlacement(null);
         setSelectedAnnotationId(null);
         setShowProjectMenu(false);
         setShowAddClass(false);
@@ -799,12 +947,16 @@ export function ProjectWorkspace({
         const delta = matchesShortcut(event, shortcuts.previousClass) ? -1 : 1;
         const next = classes[Math.min(classes.length - 1, Math.max(0, (current < 0 ? 0 : current) + delta))];
         if (next) { event.preventDefault(); chooseClass(next.id); }
+      } else if (keypointPlacement && matchesShortcut(event, shortcuts.skipKeypoint)) {
+        event.preventDefault();
+        skipKeypoint();
       } else if (matchesShortcut(event, shortcuts.island) && selectedAnnotation?.kind === "polygon") {
         event.preventDefault();
         beginIsland();
       } else if (matchesShortcut(event, shortcuts.edit)) {
         canvasRef.current?.cancelDraft();
         setAppendPolygonToId(null);
+        setKeypointPlacement(null);
         setActiveTool("select");
       } else if (matchesShortcut(event, shortcuts.rectangle) && allowedTools.includes("rectangle")) {
         activateTool("rectangle");
@@ -814,7 +966,7 @@ export function ProjectWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeClassId, activateTool, allowedTools, annotations, annotationsLoadedId, beginIsland, chooseClass, classes, classifyImage, moveSelectedToDeleted, navigate, project.taskType, redo, removeAnnotation, selected, selectedAnnotation, shortcuts, showShortcutSettings, undo]);
+  }, [activeClassId, activateTool, allowedTools, annotations, annotationsLoadedId, beginIsland, chooseClass, classes, classifyImage, keypointPlacement, moveSelectedToDeleted, navigate, project.taskType, redo, removeAnnotation, selected, selectedAnnotation, shortcuts, showShortcutSettings, skipKeypoint, stepBackKeypoint, undo]);
 
   const commitShortcuts = useCallback((next: ShortcutMap) => {
     saveShortcuts(next);
@@ -837,12 +989,12 @@ export function ProjectWorkspace({
   }, [flushViewportSave, selected]);
 
   return (
-    <main className={`workspace-shell phase-two phase-three${project.taskType === "classification" ? " phase-five" : ""}`}>
+    <main className="workspace-shell">
       <header className="workspace-toolbar">
         <button className="back-button" onClick={onClose}><ToolIcon name="back" />Projects</button>
         <div className="project-identity"><strong>{currentProject.name}</strong><span>{TASK_LABELS[currentProject.taskType]}</span></div>
         <div className="workspace-path" title={currentProject.rootPath}>{currentProject.rootPath}</div>
-        <span className="saved-state"><span />Saved locally</span>
+        <span className="status"><i className="dot" />Saved locally</span>
         <div className="history-buttons">
           <button className="icon-button" aria-label="Undo" title="Undo (⌘Z)" disabled={!history.canUndo || busy} onClick={() => void undo()}><ToolIcon name="undo" /></button>
           <button className="icon-button" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!history.canRedo || busy} onClick={() => void redo()}><ToolIcon name="redo" /></button>
@@ -865,12 +1017,14 @@ export function ProjectWorkspace({
           <div className="tool-strip" aria-label="Editor tools">
             <div className="tool-group">
               <button className={leftPanelVisible ? "icon-button panel-toggle active" : "icon-button panel-toggle"} aria-label={`${leftPanelVisible ? "Hide" : "Show"} image list`} aria-pressed={leftPanelVisible} title={`${leftPanelVisible ? "Hide" : "Show"} image list`} onClick={() => setLeftPanelVisible((visible) => !visible)}><ToolIcon name="leftPanel" /></button>
-              {allowedTools.map((tool) => (
-                <button className={activeTool === tool ? "tool-button active" : "tool-button"} aria-pressed={activeTool === tool} onClick={() => activateTool(tool)} title={`${toolLabel(tool)} (${toolShortcut(tool, shortcuts)})`} key={tool}>
-                  <ToolIcon name={tool} /><span>{toolLabel(tool)}</span><kbd>{toolShortcut(tool, shortcuts)}</kbd>
-                </button>
-              ))}
-              {(project.taskType === "detection" || project.taskType === "segmentation") && activeClass && (
+              {allowedTools.length > 1 && <div className="seg" role="group" aria-label="Annotation tool">
+                {allowedTools.map((tool) => (
+                  <button className={activeTool === tool ? "tool-button active" : "tool-button"} aria-pressed={activeTool === tool} onClick={() => activateTool(tool)} title={`${toolLabel(tool)} (${toolShortcut(tool, shortcuts)})`} key={tool}>
+                    <ToolIcon name={tool} /><span>{toolLabel(tool)}</span><kbd>{toolShortcut(tool, shortcuts)}</kbd>
+                  </button>
+                ))}
+              </div>}
+              {project.taskType !== "classification" && activeClass && (
                 <span className="active-class-chip" style={{ "--class-color": activeClass.color } as React.CSSProperties} title="Active class">
                   <i />{activeClass.name}<kbd>{activeClass.shortcut ?? "—"}</kbd>
                 </span>
@@ -905,13 +1059,17 @@ export function ProjectWorkspace({
                 onUpdateBox={updateBoxGeometry}
                 onCreatePolygon={createPolygon}
                 onUpdatePolygon={updatePolygonGeometry}
+                keypointSchema={keypointSchema}
+                keypointPlacement={keypointPlacement}
+                onUpdateKeypoints={updateKeypointGeometry}
+                onKeypointPlacementChange={setKeypointPlacement}
                 onDraftChange={changeDraft}
                 onViewportChange={scheduleViewportSave}
                 onPointerChange={setPointer}
                 onDecodeError={setError}
               />
             ) : selected?.status === "deleted" ? (
-              <div className="unavailable-stage deleted-stage"><ToolIcon name="trash" /><strong>{selected.fileName} is in deleted</strong><span>It is outside the active dataset and can be restored.</span><button onClick={() => void restoreSelected()}><ToolIcon name="restore" />Restore image</button></div>
+              <div className="unavailable-stage deleted-stage"><ToolIcon name="trash" /><strong>{selected.fileName} is in deleted</strong><span>It is outside the active dataset and can be restored.</span><button className="btn" onClick={() => void restoreSelected()}><ToolIcon name="restore" />Restore image</button></div>
             ) : selected?.status === "missing" ? (
               <div className="unavailable-stage"><ToolIcon name="image" /><strong>{selected.fileName} is missing</strong><span>Return it to {selected.relativePath}, then rescan.</span></div>
             ) : (
@@ -929,6 +1087,10 @@ export function ProjectWorkspace({
             <span>{pointer ? `x ${Math.round(pointer.x)}  y ${Math.round(pointer.y)}` : "x —  y —"}</span>
             <span className="status-help">{project.taskType === "classification"
               ? "class key labels · arrows navigate · scroll to pan · pinch to zoom"
+              : project.taskType === "keypoints"
+                ? keypointPlacement
+                  ? `click ${keypointSchema?.names[keypointPlacement.index] ?? "point"} · ⇧ occluded · ${shortcutLabel(shortcuts.skipKeypoint)} skip · ⌫ back · ↵ done · drag next box`
+                  : "drag a box, then click its points · ⇧ click toggles occluded · ⌥ click clears"
               : project.taskType === "detection"
                 ? "drag to draw · hover to edit · ⌘ drag overlaps · Space drag pans"
                 : `${shortcutLabel(shortcuts.edit)} edit · class key draws · scroll to pan · pinch to zoom`}</span>
@@ -936,7 +1098,7 @@ export function ProjectWorkspace({
         </section>
 
         <aside className="inspector">
-          {project.taskType === "detection" || project.taskType === "segmentation" ? <>
+          {project.taskType !== "classification" ? <>
             <div className="inspector-title">
               <div className="title-copy"><h2>Objects</h2><span>{annotations.length}</span></div>
               <button className="more-button" aria-label="Project options" aria-haspopup="true" aria-expanded={showProjectMenu} title="Project options" onClick={() => setShowProjectMenu((visible) => !visible)}><ToolIcon name="more" /></button>
@@ -946,6 +1108,9 @@ export function ProjectWorkspace({
                 {project.taskType === "detection" ? <>
                   <button disabled={busy} onClick={() => void runExchange("yolo-import")}><ToolIcon name="import" />YOLO boxes</button>
                   <button disabled={busy} onClick={() => void runExchange("coco-import")}><ToolIcon name="import" />COCO boxes</button>
+                </> : project.taskType === "keypoints" ? <>
+                  <button disabled={busy} onClick={() => void runExchange("yolo-keypoints-import")}><ToolIcon name="import" />YOLO keypoints</button>
+                  <button disabled={busy} onClick={() => void runExchange("coco-keypoints-import")}><ToolIcon name="import" />COCO keypoints</button>
                 </> : <>
                   <button disabled={busy} onClick={() => void runExchange("yolo-polygon-import")}><ToolIcon name="import" />YOLO polygons</button>
                   <button disabled={busy} onClick={() => void runExchange("coco-polygon-import")}><ToolIcon name="import" />COCO polygons</button>
@@ -954,6 +1119,9 @@ export function ProjectWorkspace({
                 {project.taskType === "detection" ? <>
                   <button disabled={busy || classes.length === 0} onClick={() => void runExchange("yolo-export")}><ToolIcon name="export" />YOLO folder</button>
                   <button disabled={busy || classes.length === 0} onClick={() => void runExchange("coco-export")}><ToolIcon name="export" />COCO JSON</button>
+                </> : project.taskType === "keypoints" ? <>
+                  <button disabled={busy || classes.length === 0} onClick={() => void runExchange("yolo-keypoints-export")}><ToolIcon name="export" />YOLO keypoints</button>
+                  <button disabled={busy || classes.length === 0} onClick={() => void runExchange("coco-keypoints-export")}><ToolIcon name="export" />COCO JSON</button>
                 </> : <>
                   <button disabled={busy || classes.length === 0} onClick={() => void runExchange("yolo-polygon-export")}><ToolIcon name="export" />YOLO polygons</button>
                   <button disabled={busy || classes.length === 0} onClick={() => void runExchange("coco-polygon-export")}><ToolIcon name="export" />COCO JSON</button>
@@ -961,8 +1129,13 @@ export function ProjectWorkspace({
                 <strong>Keys</strong>
                 <p><kbd>1</kbd>…<kbd>0</kbd> draw class</p>
                 <p><kbd>{shortcutLabel(shortcuts.edit)}</kbd> edit objects</p>
-                <p><kbd>{project.taskType === "detection" ? shortcutLabel(shortcuts.rectangle) : shortcutLabel(shortcuts.polygon)}</kbd> draw active class</p>
-                {project.taskType === "detection" && <p><kbd>⌘ drag</kbd> draw through a box</p>}
+                <p><kbd>{project.taskType === "segmentation" ? shortcutLabel(shortcuts.polygon) : shortcutLabel(shortcuts.rectangle)}</kbd> draw active class</p>
+                {project.taskType !== "segmentation" && <p><kbd>⌘ drag</kbd> draw through a box</p>}
+                {project.taskType === "keypoints" && <>
+                  <p><kbd>click</kbd> next point · <kbd>⇧</kbd> occluded</p>
+                  <p><kbd>{shortcutLabel(shortcuts.skipKeypoint)}</kbd> skip · <kbd>⌫</kbd> back · <kbd>↵</kbd> done</p>
+                  <p><kbd>⇧ click</kbd> toggle occluded · <kbd>⌥ click</kbd> clear</p>
+                </>}
                 {project.taskType === "segmentation" && <p><kbd>↵</kbd> finish · <kbd>⌫</kbd> last point</p>}
                 {project.taskType === "segmentation" && <p><kbd>{shortcutLabel(shortcuts.island)}</kbd> add island to selected</p>}
                 <p><kbd>⌫</kbd> delete selected/last object</p>
@@ -986,14 +1159,51 @@ export function ProjectWorkspace({
             </div> : <p className="empty-objects">No objects on this image.</p>}
             {selectedAnnotation && (
               <section className="box-inspector" style={{ "--class-color": classes.find((item) => item.id === selectedAnnotation.classId)?.color ?? "#fff" } as React.CSSProperties}>
-                <div className="box-selection-heading"><i /><strong>Selected {selectedAnnotation.kind === "bbox" ? "box" : "polygon"}</strong><button aria-label="Delete selected object" title="Delete object" onClick={() => void removeAnnotation()}><ToolIcon name="trash" /></button></div>
+                <div className="box-selection-heading"><i /><strong>Selected {selectedAnnotation.kind === "bbox" ? "box" : selectedAnnotation.kind === "polygon" ? "polygon" : "object"}</strong><button aria-label="Delete selected object" title="Delete object" onClick={() => void removeAnnotation()}><ToolIcon name="trash" /></button></div>
                 <label>Class<select value={selectedAnnotation.classId} onChange={(event) => void changeSelectedAnnotation({ classId: event.target.value })}>{classes.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
                 <label className="visibility-toggle"><input type="checkbox" checked={selectedAnnotation.isVisible} onChange={(event) => void changeSelectedAnnotation({ isVisible: event.target.checked })} /><ToolIcon name="eye" />Visible</label>
-                <small>{annotationSummary(selectedAnnotation)}</small>
+                <small>{annotationSummary(selectedAnnotation, keypointCount)}</small>
                 {selectedAnnotation.kind === "polygon" && geometryWarnings(selectedAnnotation.geometry).map((warning) => <small className="geometry-warning" key={warning}>{warning}</small>)}
                 {selectedAnnotation.kind === "polygon" && <button className={appendPolygonToId === selectedAnnotation.id ? "island-button active" : "island-button"} onClick={beginIsland} disabled={busy}>
                   <span>{appendPolygonToId === selectedAnnotation.id ? "Click to draw island" : "Add island"}</span><kbd>{shortcutLabel(shortcuts.island)}</kbd>
                 </button>}
+                {selectedKeypoints && keypointCount > 0 && (keypointPlacement?.annotationId === selectedKeypoints.id
+                  ? <button className="island-button active" onClick={() => setKeypointPlacement(null)}>
+                    <span>Placing {keypointSchema?.names[keypointPlacement.index]}</span><kbd>↵</kbd>
+                  </button>
+                  : <button className="island-button" disabled={busy || labeledCount(selectedKeypoints.geometry) >= keypointCount} onClick={() => startKeypointPlacement(null)}>
+                    <span>{labeledCount(selectedKeypoints.geometry) >= keypointCount ? "All points placed" : `Place ${keypointCount - labeledCount(selectedKeypoints.geometry)} missing points`}</span>
+                  </button>)}
+              </section>
+            )}
+
+            {project.taskType === "keypoints" && (
+              <section className="class-editor keypoint-editor" style={{ "--class-color": classes.find((item) => item.id === selectedKeypoints?.classId)?.color ?? "var(--muted)" } as React.CSSProperties}>
+                <div className="panel-heading">
+                  <div><strong>Keypoints</strong><span>{keypointCount === 0 ? "none" : selectedKeypoints ? `${labeledCount(selectedKeypoints.geometry)} / ${keypointCount} placed` : `${keypointCount} per object`}</span></div>
+                  <button className="add-class-toggle edit-keypoints" aria-label="Edit keypoint names" aria-expanded={keypointNamesDraft !== null} title="Edit keypoint names" onClick={() => setKeypointNamesDraft((current) => current === null ? (keypointSchema?.names ?? []).join("\n") : null)}>Edit</button>
+                </div>
+                {keypointNamesDraft !== null ? <form className="keypoint-names" onSubmit={(event) => { event.preventDefault(); void saveKeypointNames(); }}>
+                  <textarea autoFocus rows={Math.min(12, Math.max(4, keypointCount + 1))} value={keypointNamesDraft} onChange={(event) => setKeypointNamesDraft(event.target.value)} placeholder={"nose\nleft_eye\nright_eye"} aria-label="Keypoint names, one per line" onKeyDown={(event) => { if (event.key === "Escape") setKeypointNamesDraft(null); }} />
+                  <small>One name per line, in export order. Rename or add points any time; removing needs a project without objects.</small>
+                  <div><button type="button" onClick={() => setKeypointNamesDraft(null)}>Cancel</button><button>Save</button></div>
+                </form> : keypointCount === 0 ? <p className="empty-classes">Name the points every object carries, or import YOLO / COCO keypoints.</p>
+                  : <div className="keypoint-list" aria-label="Keypoints">
+                    {keypointSchema?.names.map((name, index) => {
+                      const point = selectedKeypoints?.geometry.keypoints[index];
+                      const state = !selectedKeypoints ? "" : !point?.v ? " missing" : point.v === 1 ? " occluded" : " visible";
+                      const placing = keypointPlacement?.annotationId === selectedKeypoints?.id && keypointPlacement?.index === index;
+                      return <div className={`keypoint-row${state}${placing ? " placing" : ""}`} key={index}>
+                        <button className="keypoint-choice" disabled={!selectedKeypoints} title={selectedKeypoints ? `Place ${name}` : "Select an object to place points"} onClick={() => startKeypointPlacement(index)}>
+                          <small>{index + 1}</small><i /><span>{name}</span>{point?.v === 1 && <em>occluded</em>}
+                        </button>
+                        {point?.v ? <>
+                          <button className="keypoint-action" title={point.v === 1 ? "Mark visible" : "Mark occluded"} onClick={() => changeKeypoint(index, "toggle")}>{point.v === 1 ? "◐" : "●"}</button>
+                          <button className="keypoint-action remove" title={`Clear ${name}`} onClick={() => changeKeypoint(index, "clear")}>×</button>
+                        </> : null}
+                      </div>;
+                    })}
+                  </div>}
               </section>
             )}
 
@@ -1098,10 +1308,11 @@ function toolShortcut(tool: EditorTool, shortcuts: ShortcutMap): string {
   return shortcutLabel(shortcuts.edit);
 }
 
-function annotationSummary(annotation: AnnotationRecord): string {
-  if (annotation.kind === "bbox") {
-    const geometry = annotation.geometry;
-    return `${Math.round(geometry.x)}, ${Math.round(geometry.y)} · ${Math.round(geometry.width)} × ${Math.round(geometry.height)} px`;
+function annotationSummary(annotation: AnnotationRecord, keypointCount: number): string {
+  if (annotation.kind === "bbox" || annotation.kind === "keypoints") {
+    const geometry = annotation.kind === "bbox" ? annotation.geometry : annotation.geometry.bbox;
+    const box = `${Math.round(geometry.x)}, ${Math.round(geometry.y)} · ${Math.round(geometry.width)} × ${Math.round(geometry.height)} px`;
+    return annotation.kind === "keypoints" ? `${labeledCount(annotation.geometry)}/${keypointCount} points · ${box}` : box;
   }
   const contours = annotation.geometry.polygons.length;
   const vertices = annotation.geometry.polygons.reduce((sum, polygon) => sum + polygon.length, 0);

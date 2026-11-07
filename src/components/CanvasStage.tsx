@@ -1,7 +1,8 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from "react";
 import type {
   AnnotationDraft, AnnotationRecord, BboxAnnotationRecord, BboxDraft, BboxGeometry, ClassRecord,
-  EditorTool, ImageRecord, PolygonAnnotationRecord, PolygonDraft, PolygonGeometry, ViewportSnapshot,
+  EditorTool, ImageRecord, KeypointAnnotationRecord, KeypointGeometry, KeypointPlacement, KeypointSchema,
+  PolygonAnnotationRecord, PolygonDraft, PolygonGeometry, ViewportSnapshot,
 } from "../types";
 import {
   BOX_RESIZE_HANDLES,
@@ -16,6 +17,7 @@ import {
   type BoxHandle,
 } from "../editor/boxes";
 import { hitTestTopmost, type SelectableGeometry } from "../editor/hitTest";
+import { keypointIndexAt, moveKeypointObject, nextUnlabeled, setKeypoint, UNLABELED } from "../editor/keypoints";
 import { movePolygon, movePolygonVertex, polygonVertexAt, type PolygonVertex } from "../editor/polygons";
 import { isTypingTarget } from "../editor/shortcuts";
 import {
@@ -48,6 +50,10 @@ interface CanvasStageProps {
   onUpdateBox: (annotation: BboxAnnotationRecord, geometry: BboxGeometry) => void;
   onCreatePolygon: (geometry: PolygonGeometry, classId: string, annotationId?: string | null) => void;
   onUpdatePolygon: (annotation: PolygonAnnotationRecord, geometry: PolygonGeometry) => void;
+  keypointSchema?: KeypointSchema | null;
+  keypointPlacement?: KeypointPlacement | null;
+  onUpdateKeypoints?: (annotation: KeypointAnnotationRecord, geometry: KeypointGeometry) => void;
+  onKeypointPlacementChange?: (placement: KeypointPlacement | null) => void;
   onDraftChange: (draft: AnnotationDraft | null) => void;
   onViewportChange: (snapshot: ViewportSnapshot, zoomPercent: number, persist: boolean) => void;
   onPointerChange: (point: Point | null) => void;
@@ -55,14 +61,18 @@ interface CanvasStageProps {
 }
 
 type BoxDrag = { pointerId: number; annotation: BboxAnnotationRecord; origin: Point; handle: BoxHandle; preview: BboxGeometry };
-type BoxCreateDrag = { pointerId: number; start: Point; startScreen: Point; classId: string };
+// While a keypoint is being placed, a press is a point unless it turns into a
+// drag, which starts the next object's box instead.
+type BoxCreateDrag = { pointerId: number; start: Point; startScreen: Point; classId: string | null; placeKeypoint?: { occluded: boolean } };
 type PolygonDrag = { pointerId: number; annotation: PolygonAnnotationRecord; origin: Point; vertex: PolygonVertex | null; preview: PolygonGeometry };
-type EditHover = { annotationId: string; boxHandle?: BoxHandle; vertex?: PolygonVertex };
+type KeypointDrag = { pointerId: number; annotation: KeypointAnnotationRecord; origin: Point; handle: BoxHandle | null; pointIndex: number | null; preview: KeypointGeometry };
+type EditHover = { annotationId: string; boxHandle?: BoxHandle; vertex?: PolygonVertex; keypoint?: number };
 
 export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(function CanvasStage(props, forwardedRef) {
   const {
     image, imageUrl, restoredViewport, restoredDraft, activeTool, activeClass, appendPolygonToId, classes,
     annotations, selectedAnnotationId, onSelectAnnotation, onCreateBox, onUpdateBox, onCreatePolygon, onUpdatePolygon,
+    keypointSchema = null, keypointPlacement = null, onUpdateKeypoints, onKeypointPlacementChange,
     onDraftChange, onViewportChange, onPointerChange, onDecodeError,
   } = props;
   const hostRef = useRef<HTMLDivElement>(null);
@@ -76,6 +86,9 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
   const boxCreateDragRef = useRef<BoxCreateDrag | null>(null);
   const boxDragRef = useRef<BoxDrag | null>(null);
   const polygonDragRef = useRef<PolygonDrag | null>(null);
+  const keypointDragRef = useRef<KeypointDrag | null>(null);
+  const keypointSchemaRef = useRef(keypointSchema);
+  const placementRef = useRef(keypointPlacement);
   const editHoverRef = useRef<EditHover | null>(null);
   const draftRef = useRef<AnnotationDraft | null>(restoredDraft);
   const activeToolRef = useRef(activeTool);
@@ -172,6 +185,54 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
     if (label && first) drawGeometryLabel(context, imageToScreen(viewportRef.current, first), label, color, ratio);
   }, []);
 
+  const drawKeypointObject = useCallback((context: CanvasRenderingContext2D, geometry: KeypointGeometry, color: string, selected: boolean, ratio: number, label?: string, controls = selected) => {
+    drawBox(context, geometry.bbox, color, selected, ratio, label, controls);
+    const points = geometry.keypoints.map((point) => point.v > 0 ? imageToScreen(viewportRef.current, point) : null);
+    const skeleton = keypointSchemaRef.current?.skeleton ?? [];
+    if (skeleton.length > 0) {
+      context.beginPath();
+      for (const [a, b] of skeleton) {
+        const start = points[a];
+        const end = points[b];
+        if (!start || !end) continue;
+        context.moveTo(start.x * ratio, start.y * ratio);
+        context.lineTo(end.x * ratio, end.y * ratio);
+      }
+      context.strokeStyle = "rgba(0,0,0,.7)";
+      context.lineWidth = 3 * ratio;
+      context.stroke();
+      context.strokeStyle = color;
+      context.lineWidth = 1.25 * ratio;
+      context.stroke();
+    }
+    const radius = (selected ? 4 : 3.25) * ratio;
+    geometry.keypoints.forEach((keypoint, index) => {
+      const point = points[index];
+      if (!point) return;
+      const x = point.x * ratio;
+      const y = point.y * ratio;
+      context.beginPath();
+      context.arc(x, y, radius + 1.25 * ratio, 0, Math.PI * 2);
+      context.fillStyle = "rgba(0,0,0,.85)";
+      context.fill();
+      context.beginPath();
+      // Visible points are filled; occluded ones are hollow rings.
+      if (keypoint.v === 1) {
+        context.arc(x, y, radius - 0.5 * ratio, 0, Math.PI * 2);
+        context.strokeStyle = color;
+        context.lineWidth = 1.5 * ratio;
+        context.stroke();
+      } else {
+        context.arc(x, y, radius, 0, Math.PI * 2);
+        context.fillStyle = color;
+        context.fill();
+      }
+    });
+  }, [drawBox]);
+
+  const keypointPreview = (annotation: KeypointAnnotationRecord) =>
+    keypointDragRef.current?.annotation.id === annotation.id ? keypointDragRef.current.preview : annotation.geometry;
+
   const renderNow = useCallback(() => {
     const baseCanvas = baseCanvasRef.current;
     const overlayCanvas = overlayCanvasRef.current;
@@ -210,8 +271,9 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
       if (annotation.kind === "bbox") {
         const geometry = boxDragRef.current?.annotation.id === annotation.id ? boxDragRef.current.preview : annotation.geometry;
         drawBox(overlay, geometry, record?.color ?? "#fff", false, ratio, record?.name, hovered?.annotationId === annotation.id);
-      }
-      else drawPolygon(overlay, annotation.geometry, record?.color ?? "#fff", false, ratio, record?.name);
+      } else if (annotation.kind === "keypoints") {
+        drawKeypointObject(overlay, keypointPreview(annotation), record?.color ?? "#fff", false, ratio, record?.name, hovered?.annotationId === annotation.id);
+      } else drawPolygon(overlay, annotation.geometry, record?.color ?? "#fff", false, ratio, record?.name);
     }
     const selected = annotationsRef.current.find((item) => item.id === selectedIdRef.current && item.isVisible);
     if (selected) {
@@ -220,12 +282,16 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
         const geometry = boxDragRef.current?.annotation.id === selected.id ? boxDragRef.current.preview : selected.geometry;
         const showControls = !hovered || hovered.annotationId === selected.id;
         drawBox(overlay, geometry, record?.color ?? "#fff", true, ratio, record?.name, showControls);
+      } else if (selected.kind === "keypoints") {
+        // Box handles stay hidden while its points are being placed.
+        const showControls = (!hovered || hovered.annotationId === selected.id) && placementRef.current?.annotationId !== selected.id;
+        drawKeypointObject(overlay, keypointPreview(selected), record?.color ?? "#fff", true, ratio, record?.name, showControls);
       } else {
         const geometry = polygonDragRef.current?.annotation.id === selected.id ? polygonDragRef.current.preview : selected.geometry;
         drawPolygon(overlay, geometry, record?.color ?? "#fff", true, ratio, record?.name);
       }
     }
-    if ((hovered?.boxHandle || hovered?.vertex) && (activeToolRef.current === "select" || activeToolRef.current === "rectangle")) {
+    if ((hovered?.boxHandle || hovered?.vertex || hovered?.keypoint !== undefined) && (activeToolRef.current === "select" || activeToolRef.current === "rectangle")) {
       const annotation = annotationsRef.current.find((item) => item.id === hovered.annotationId && item.isVisible);
       if (annotation) {
         const record = colorMap.get(annotation.classId);
@@ -235,6 +301,23 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
             ? boxMoveHandlePoint(geometry, 22 / viewport.scale)
             : boxHandlePoint(geometry, hovered.boxHandle);
           drawVertex(overlay, imageToScreen(viewport, point), record?.color ?? "#fff", ratio, true);
+        } else if (annotation.kind === "keypoints") {
+          const geometry = keypointPreview(annotation);
+          const color = record?.color ?? "#fff";
+          if (hovered.keypoint !== undefined) {
+            const keypoint = geometry.keypoints[hovered.keypoint];
+            if (keypoint?.v) {
+              const screen = imageToScreen(viewport, keypoint);
+              drawVertex(overlay, screen, color, ratio, true);
+              const name = keypointSchemaRef.current?.names[hovered.keypoint] ?? `${hovered.keypoint}`;
+              drawGeometryLabel(overlay, { x: screen.x + 9, y: screen.y - 7 }, `${name}${keypoint.v === 1 ? " · occluded" : ""}`, color, ratio);
+            }
+          } else if (hovered.boxHandle) {
+            const point = hovered.boxHandle === "move"
+              ? boxMoveHandlePoint(geometry.bbox, 22 / viewport.scale)
+              : boxHandlePoint(geometry.bbox, hovered.boxHandle);
+            drawVertex(overlay, imageToScreen(viewport, point), color, ratio, true);
+          }
         } else if (annotation.kind === "polygon" && hovered.vertex) {
           const geometry = polygonDragRef.current?.annotation.id === annotation.id ? polygonDragRef.current.preview : annotation.geometry;
           const point = geometry.polygons[hovered.vertex.polygonIndex]?.[hovered.vertex.pointIndex];
@@ -244,7 +327,12 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
     }
     const pointer = pointerRef.current;
     const draft = draftRef.current;
-    if (draft && "x" in draft && pointer) {
+    const placementPress = boxCreateDragRef.current?.placeKeypoint ? boxCreateDragRef.current : null;
+    if (placementPress?.classId && pointer && isBoxCreationDrag(placementPress.startScreen, pointer)) {
+      const record = colorMap.get(placementPress.classId);
+      const current = clampPointToImage(screenToImage(viewport, pointer), imageSize());
+      drawBox(overlay, boxFromCorners(placementPress.start, current), record?.color ?? "#fff", false, ratio, record?.name, true, false);
+    } else if (draft && "x" in draft && pointer) {
       const current = clampPointToImage(screenToImage(viewport, pointer), imageSize());
       const record = colorMap.get(draft.classId);
       drawBox(overlay, boxFromCorners({ x: draft.x, y: draft.y }, current), record?.color ?? "#fff", false, ratio, record?.name, true, false);
@@ -286,8 +374,15 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
       overlay.arc(x, y, 2.25 * ratio, 0, Math.PI * 2);
       overlay.fillStyle = color;
       overlay.fill();
+      const placement = placementRef.current;
+      const placing = placement && annotationsRef.current.find((item) => item.id === placement.annotationId);
+      if (placement && placing) {
+        const names = keypointSchemaRef.current?.names ?? [];
+        const label = `${placement.index + 1}/${names.length} ${names[placement.index] ?? ""}`;
+        drawGeometryLabel(overlay, { x: pointer.x + 10, y: pointer.y + 28 }, label, colorMap.get(placing.classId)?.color ?? color, ratio);
+      }
     }
-  }, [drawBox, drawPolygon, image.height, image.width, imageSize]);
+  }, [drawBox, drawKeypointObject, drawPolygon, image.height, image.width, imageSize]);
 
   const render = useCallback(() => {
     if (renderFrameRef.current !== null) return;
@@ -312,6 +407,13 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
   useEffect(() => { annotationsRef.current = annotations; render(); }, [annotations, render]);
   useEffect(() => { selectedIdRef.current = selectedAnnotationId; render(); }, [selectedAnnotationId, render]);
   useEffect(() => { classesRef.current = classes; render(); }, [classes, render]);
+  useEffect(() => { keypointSchemaRef.current = keypointSchema; render(); }, [keypointSchema, render]);
+  useEffect(() => {
+    placementRef.current = keypointPlacement;
+    editHoverRef.current = null;
+    setEditCursor("default");
+    render();
+  }, [keypointPlacement, render]);
   useEffect(() => { spaceDownRef.current = spaceDown; render(); }, [render, spaceDown]);
   useEffect(() => { draftRef.current = restoredDraft; render(); }, [restoredDraft, render]);
 
@@ -457,6 +559,11 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
       if (annotation.kind === "bbox") {
         const boxHandle = boxHandleAt(point, annotation.geometry, 8 / viewportRef.current.scale, 22 / viewportRef.current.scale);
         if (boxHandle) return { annotationId: annotation.id, boxHandle };
+      } else if (annotation.kind === "keypoints") {
+        const keypoint = keypointIndexAt(point, annotation.geometry, 8 / viewportRef.current.scale);
+        if (keypoint !== null) return { annotationId: annotation.id, keypoint };
+        const boxHandle = boxHandleAt(point, annotation.geometry.bbox, 8 / viewportRef.current.scale, 22 / viewportRef.current.scale);
+        if (boxHandle) return { annotationId: annotation.id, boxHandle };
       } else {
         const vertex = polygonVertexAt(point, annotation.geometry, 8 / viewportRef.current.scale);
         if (vertex) return { annotationId: annotation.id, vertex };
@@ -465,6 +572,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
     const geometries: SelectableGeometry[] = [];
     for (const item of visible) {
       if (item.kind === "bbox") geometries.push({ id: item.id, kind: "bbox", rect: item.geometry });
+      else if (item.kind === "keypoints") geometries.push({ id: item.id, kind: "bbox", rect: item.geometry.bbox });
       else for (const points of item.geometry.polygons) geometries.push({ id: item.id, kind: "polygon", points });
     }
     const hitId = hitTestTopmost(point, geometries, 3 / viewportRef.current.scale);
@@ -472,16 +580,58 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
   };
   const updateEditHover = (screen: Point | null) => {
     const editingTool = activeToolRef.current === "select" || activeToolRef.current === "rectangle";
-    const bypassingBoxes = activeToolRef.current === "rectangle" && commandDownRef.current;
+    const bypassingBoxes = activeToolRef.current === "rectangle" && (commandDownRef.current || placementRef.current !== null);
     const next = editingTool && !bypassingBoxes && screen
       ? findEditTarget(screenToImage(viewportRef.current, screen))
       : null;
     const previous = editHoverRef.current;
     if (hoverKey(previous) !== hoverKey(next)) {
       editHoverRef.current = next;
-      setEditCursor(next?.boxHandle ? boxCursor(next.boxHandle) : next?.vertex ? "pointer" : next ? "pointer" : "default");
+      setEditCursor(next?.boxHandle ? boxCursor(next.boxHandle) : next ? "pointer" : "default");
       render();
     }
+  };
+  const keypointCount = () => keypointSchemaRef.current?.names.length ?? 0;
+  const commitKeypoints = (annotation: KeypointAnnotationRecord, geometry: KeypointGeometry) => {
+    // Keep the local copy current so a fast next click builds on this one.
+    annotationsRef.current = annotationsRef.current.map((item) => item.id === annotation.id ? { ...annotation, geometry } : item);
+    onUpdateKeypoints?.(annotation, geometry);
+  };
+  const changePlacement = (next: KeypointPlacement | null) => {
+    placementRef.current = next;
+    onKeypointPlacementChange?.(next);
+  };
+  const placeKeypoint = (point: Point, occluded: boolean) => {
+    const placement = placementRef.current;
+    const annotation = annotationsRef.current.find((item) => item.id === placement?.annotationId);
+    if (!placement || annotation?.kind !== "keypoints") return;
+    const count = keypointCount();
+    const geometry = setKeypoint(annotation.geometry, count, placement.index, { x: point.x, y: point.y, v: occluded ? 1 : 2 });
+    const next = placement.single ? null : nextUnlabeled(geometry, count, placement.index);
+    commitKeypoints(annotation, geometry);
+    changePlacement(next === null ? null : { annotationId: annotation.id, index: next });
+  };
+  /** Shift-click toggles occluded, Option-click clears, otherwise drags a point or box handle. */
+  const beginKeypointEdit = (event: React.PointerEvent<HTMLCanvasElement>, annotation: KeypointAnnotationRecord, target: EditHover, point: Point) => {
+    if (target.keypoint !== undefined && (event.shiftKey || event.altKey)) {
+      const current = annotation.geometry.keypoints[target.keypoint];
+      const next = event.altKey ? UNLABELED : { ...current, v: current.v === 1 ? 2 : 1 };
+      commitKeypoints(annotation, setKeypoint(annotation.geometry, keypointCount(), target.keypoint, next));
+      render();
+      return;
+    }
+    if (target.keypoint === undefined && !target.boxHandle) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    keypointDragRef.current = {
+      pointerId: event.pointerId,
+      annotation,
+      origin: point,
+      handle: target.boxHandle ?? null,
+      pointIndex: target.keypoint ?? null,
+      preview: annotation.geometry,
+    };
+    setEditCursor(target.boxHandle ? boxCursor(target.boxHandle) : "pointer");
+    render();
   };
   const cursor = dragging || spaceDown
     ? dragging ? "grabbing" : "grab"
@@ -506,8 +656,22 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
           const insideImage = isInsideImage(screen);
           const point = insideImage ? imagePoint(screen) : screenToImage(viewportRef.current, screen);
           if (activeToolRef.current === "rectangle") {
+            if (placementRef.current) {
+              if (!insideImage) return;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              boxCreateDragRef.current = {
+                pointerId: event.pointerId, start: point, startScreen: screen,
+                classId: activeClassRef.current?.id ?? null, placeKeypoint: { occluded: event.shiftKey },
+              };
+              return;
+            }
             const target = event.metaKey ? null : findEditTarget(point);
             const hit = annotationsRef.current.find((item) => item.id === target?.annotationId);
+            if (hit?.kind === "keypoints" && target) {
+              onSelectAnnotation(hit.id);
+              beginKeypointEdit(event, hit, target, point);
+              return;
+            }
             if (hit?.kind === "bbox") {
               onSelectAnnotation(hit.id);
               if (target?.boxHandle) {
@@ -563,6 +727,8 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
               polygonDragRef.current = { pointerId: event.pointerId, annotation: hit, origin: point, vertex: target?.vertex ?? null, preview: hit.geometry };
               setEditCursor(target?.vertex ? "pointer" : "move");
               render();
+            } else if (hit?.kind === "keypoints" && target) {
+              beginKeypointEdit(event, hit, target, point);
             }
           }
         }}
@@ -589,6 +755,19 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
               ? moveBox(boxDrag.annotation.geometry, { x: point.x - boxDrag.origin.x, y: point.y - boxDrag.origin.y }, imageSize())
               : resizeBox(boxDrag.annotation.geometry, boxDrag.handle, point, imageSize());
             render();
+          } else if (keypointDragRef.current?.pointerId === event.pointerId) {
+            const drag = keypointDragRef.current;
+            const geometry = drag.annotation.geometry;
+            if (drag.pointIndex !== null) {
+              const point = imagePoint(screen);
+              drag.preview = setKeypoint(geometry, keypointCount(), drag.pointIndex, { ...geometry.keypoints[drag.pointIndex], x: point.x, y: point.y });
+            } else if (drag.handle === "move") {
+              const point = screenToImage(viewportRef.current, screen);
+              drag.preview = moveKeypointObject(geometry, { x: point.x - drag.origin.x, y: point.y - drag.origin.y }, imageSize());
+            } else if (drag.handle) {
+              drag.preview = { ...geometry, bbox: resizeBox(geometry.bbox, drag.handle, imagePoint(screen), imageSize()) };
+            }
+            render();
           } else if (polygonDragRef.current?.pointerId === event.pointerId) {
             const drag = polygonDragRef.current;
             const point = imagePoint(screen);
@@ -608,17 +787,29 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
             const screen = pointerCoordinates(event);
             const end = imagePoint(screen);
             const geometry = boxFromCorners(drag.start, end);
+            const isDrag = isBoxCreationDrag(drag.startScreen, screen) && geometry.width >= 1 && geometry.height >= 1;
             boxCreateDragRef.current = null;
-            draftRef.current = null;
-            onDraftChange(null);
-            if (isBoxCreationDrag(drag.startScreen, screen) && geometry.width >= 1 && geometry.height >= 1) {
-              onCreateBox(geometry, drag.classId);
+            if (drag.placeKeypoint) {
+              if (!isDrag) placeKeypoint(drag.start, drag.placeKeypoint.occluded);
+              else if (drag.classId) {
+                changePlacement(null);
+                onCreateBox(geometry, drag.classId);
+              }
+            } else {
+              draftRef.current = null;
+              onDraftChange(null);
+              if (isDrag && drag.classId) onCreateBox(geometry, drag.classId);
             }
             render();
           }
           if (boxDragRef.current?.pointerId === event.pointerId) {
             const drag = boxDragRef.current; boxDragRef.current = null;
             if (JSON.stringify(drag.preview) !== JSON.stringify(drag.annotation.geometry)) onUpdateBox(drag.annotation, drag.preview);
+            render();
+          }
+          if (keypointDragRef.current?.pointerId === event.pointerId) {
+            const drag = keypointDragRef.current; keypointDragRef.current = null;
+            if (JSON.stringify(drag.preview) !== JSON.stringify(drag.annotation.geometry)) commitKeypoints(drag.annotation, drag.preview);
             render();
           }
           if (polygonDragRef.current?.pointerId === event.pointerId) {
@@ -632,19 +823,23 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
         }}
         onPointerCancel={() => {
           if (boxCreateDragRef.current) {
+            const placementPress = Boolean(boxCreateDragRef.current.placeKeypoint);
             boxCreateDragRef.current = null;
-            draftRef.current = null;
-            onDraftChange(null);
+            if (!placementPress) {
+              draftRef.current = null;
+              onDraftChange(null);
+            }
           }
           panDragRef.current = null;
           boxDragRef.current = null;
           polygonDragRef.current = null;
+          keypointDragRef.current = null;
           editHoverRef.current = null;
           setEditCursor("default");
           setDragging(false);
           render();
         }}
-        onPointerLeave={() => { if (!panDragRef.current && !boxCreateDragRef.current && !boxDragRef.current && !polygonDragRef.current) { editHoverRef.current = null; setEditCursor("default"); reportPointer(null); } }}
+        onPointerLeave={() => { if (!panDragRef.current && !boxCreateDragRef.current && !boxDragRef.current && !polygonDragRef.current && !keypointDragRef.current) { editHoverRef.current = null; setEditCursor("default"); reportPointer(null); } }}
       />
       {!ready && <div className="canvas-loading"><span />Decoding image…</div>}
     </div>
@@ -662,6 +857,7 @@ function hoverKey(hover: EditHover | null): string {
   if (!hover) return "";
   if (hover.boxHandle) return `${hover.annotationId}:box:${hover.boxHandle}`;
   if (hover.vertex) return `${hover.annotationId}:point:${hover.vertex.polygonIndex}:${hover.vertex.pointIndex}`;
+  if (hover.keypoint !== undefined) return `${hover.annotationId}:keypoint:${hover.keypoint}`;
   return `${hover.annotationId}:move`;
 }
 

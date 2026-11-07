@@ -1,4 +1,4 @@
-export type TaskType = "detection" | "segmentation" | "classification";
+export type TaskType = "detection" | "segmentation" | "classification" | "keypoints";
 export type ClassificationMode = "single" | "multi";
 
 export interface ProjectSummary {
@@ -71,6 +71,31 @@ export interface PolygonGeometry {
   polygons: PolygonPoint[][];
 }
 
+/** v: 0 unlabeled, 1 labeled but occluded, 2 visible (COCO / YOLO-pose flags). */
+export interface Keypoint {
+  x: number;
+  y: number;
+  v: number;
+}
+
+export interface KeypointGeometry {
+  bbox: BboxGeometry;
+  keypoints: Keypoint[];
+}
+
+/** The ordered points every object in a keypoint project carries. Skeleton pairs are zero-based. */
+export interface KeypointSchema {
+  names: string[];
+  skeleton: [number, number][];
+}
+
+/** The keypoint slot the next canvas click places; `single` ends placement after that click. */
+export interface KeypointPlacement {
+  annotationId: string;
+  index: number;
+  single?: boolean;
+}
+
 interface AnnotationBase {
   id: string;
   imageId: string;
@@ -90,7 +115,12 @@ export interface PolygonAnnotationRecord extends AnnotationBase {
   geometry: PolygonGeometry;
 }
 
-export type AnnotationRecord = BboxAnnotationRecord | PolygonAnnotationRecord;
+export interface KeypointAnnotationRecord extends AnnotationBase {
+  kind: "keypoints";
+  geometry: KeypointGeometry;
+}
+
+export type AnnotationRecord = BboxAnnotationRecord | PolygonAnnotationRecord | KeypointAnnotationRecord;
 
 export interface BboxDraft {
   imageId: string;

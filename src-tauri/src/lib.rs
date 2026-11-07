@@ -1,5 +1,6 @@
 mod classification;
 mod detection;
+mod keypoints;
 mod migrations;
 mod project;
 mod recents;
@@ -11,6 +12,7 @@ use classification::{ClassificationReport, ClassificationState};
 use detection::{
     AnnotationRecord, BboxDraft, BboxGeometry, ClassRecord, DetectionState, ImportReport,
 };
+use keypoints::{KeypointAnnotationRecord, KeypointGeometry, KeypointSchema};
 use project::{ImageRecord, ProjectSummary};
 use recents::RecentProject;
 use segmentation::{PolygonAnnotationRecord, PolygonDraft, PolygonGeometry};
@@ -24,15 +26,24 @@ async fn create_project(
     name: String,
     task_type: String,
     classification_mode: Option<String>,
+    keypoint_schema: Option<KeypointSchema>,
 ) -> Result<ProjectSummary, String> {
     let app_for_recent = app.clone();
     let project = tauri::async_runtime::spawn_blocking(move || {
-        project::create(
+        let schema = match (task_type.as_str(), keypoint_schema) {
+            ("keypoints", Some(schema)) => Some(keypoints::validate_schema(schema)?),
+            _ => None,
+        };
+        let created = project::create(
             &root_path,
             &name,
             &task_type,
             classification_mode.as_deref(),
-        )
+        )?;
+        if let Some(schema) = schema {
+            keypoints::set_schema(&created.root_path, schema)?;
+        }
+        Ok::<_, String>(created)
     })
     .await
     .map_err(|error| format!("Project creation stopped unexpectedly: {error}"))??;
@@ -544,6 +555,118 @@ async fn export_yolo_polygons(
     .map_err(|error| format!("YOLO polygon export stopped unexpectedly: {error}"))?
 }
 
+#[tauri::command(rename_all = "camelCase")]
+async fn get_keypoint_schema(root_path: String) -> Result<KeypointSchema, String> {
+    tauri::async_runtime::spawn_blocking(move || keypoints::schema(&root_path))
+        .await
+        .map_err(|error| format!("Loading keypoint names stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn set_keypoint_schema(
+    root_path: String,
+    schema: KeypointSchema,
+) -> Result<KeypointSchema, String> {
+    tauri::async_runtime::spawn_blocking(move || keypoints::set_schema(&root_path, schema))
+        .await
+        .map_err(|error| format!("Saving keypoint names stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn list_keypoint_annotations(
+    root_path: String,
+    image_id: String,
+) -> Result<Vec<KeypointAnnotationRecord>, String> {
+    tauri::async_runtime::spawn_blocking(move || keypoints::list_annotations(&root_path, &image_id))
+        .await
+        .map_err(|error| format!("Loading keypoint objects stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn create_keypoint_annotation(
+    root_path: String,
+    image_id: String,
+    class_id: String,
+    geometry: KeypointGeometry,
+) -> Result<KeypointAnnotationRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keypoints::create_annotation(&root_path, &image_id, &class_id, geometry)
+    })
+    .await
+    .map_err(|error| format!("Saving the object stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn update_keypoint_annotation(
+    root_path: String,
+    annotation_id: String,
+    class_id: String,
+    geometry: KeypointGeometry,
+    is_visible: bool,
+) -> Result<KeypointAnnotationRecord, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keypoints::update_annotation(&root_path, &annotation_id, &class_id, geometry, is_visible)
+    })
+    .await
+    .map_err(|error| format!("Updating the object stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn delete_keypoint_annotation(
+    root_path: String,
+    annotation_id: String,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keypoints::delete_annotation(&root_path, &annotation_id)
+    })
+    .await
+    .map_err(|error| format!("Deleting the object stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn import_yolo_keypoints(
+    root_path: String,
+    source_path: String,
+) -> Result<ImportReport, String> {
+    tauri::async_runtime::spawn_blocking(move || keypoints::import_yolo(&root_path, &source_path))
+        .await
+        .map_err(|error| format!("YOLO keypoint import stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn export_yolo_keypoints(
+    root_path: String,
+    destination_path: String,
+) -> Result<ImportReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keypoints::export_yolo(&root_path, &destination_path)
+    })
+    .await
+    .map_err(|error| format!("YOLO keypoint export stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn import_coco_keypoints(
+    root_path: String,
+    source_path: String,
+) -> Result<ImportReport, String> {
+    tauri::async_runtime::spawn_blocking(move || keypoints::import_coco(&root_path, &source_path))
+        .await
+        .map_err(|error| format!("COCO keypoint import stopped unexpectedly: {error}"))?
+}
+
+#[tauri::command(rename_all = "camelCase")]
+async fn export_coco_keypoints(
+    root_path: String,
+    destination_path: String,
+) -> Result<ImportReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        keypoints::export_coco(&root_path, &destination_path)
+    })
+    .await
+    .map_err(|error| format!("COCO keypoint export stopped unexpectedly: {error}"))?
+}
+
 #[tauri::command]
 fn list_recent_projects(app: tauri::AppHandle) -> Result<Vec<RecentProject>, String> {
     let directory = app
@@ -614,6 +737,16 @@ pub fn run() {
             import_coco_polygons,
             export_coco_polygons,
             export_yolo_polygons,
+            get_keypoint_schema,
+            set_keypoint_schema,
+            list_keypoint_annotations,
+            create_keypoint_annotation,
+            update_keypoint_annotation,
+            delete_keypoint_annotation,
+            import_yolo_keypoints,
+            export_yolo_keypoints,
+            import_coco_keypoints,
+            export_coco_keypoints,
             list_recent_projects
         ])
         .run(tauri::generate_context!())

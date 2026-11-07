@@ -39,10 +39,10 @@ export function ShortcutSettings({
 
   return (
     <div className="sheet-backdrop shortcut-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="shortcut-sheet" role="dialog" aria-modal="true" aria-labelledby="shortcut-title" ref={dialogRef}>
-        <header>
+      <div className="sheet shortcut-sheet" role="dialog" aria-modal="true" aria-labelledby="shortcut-title" ref={dialogRef}>
+        <header className="sheet-head">
           <div><h2 id="shortcut-title">Keyboard shortcuts</h2><p>Enter one letter or punctuation key. Number keys and D stay reserved.</p></div>
-          <button className="shortcut-close" aria-label="Close keyboard shortcut settings" onClick={onClose}>×</button>
+          <button className="icon-button shortcut-close" aria-label="Close keyboard shortcut settings" onClick={onClose}>×</button>
         </header>
         <div className="shortcut-fields">
           {SHORTCUT_FIELDS.map(({ id, label }) => (
@@ -61,11 +61,11 @@ export function ShortcutSettings({
         </div>
         {error && <p className="shortcut-error" role="alert">{error}</p>}
         <p className="shortcut-fixed">Always available: <kbd>←</kbd>/<kbd>→</kbd> images, <kbd>1</kbd>…<kbd>0</kbd> classes, <kbd>D D</kbd> delete image, <kbd>⌘Z</kbd> undo, <kbd>⇧⌘Z</kbd> redo, <kbd>⌘+</kbd>/<kbd>⌘−</kbd> zoom, <kbd>Space</kbd>-drag pan.</p>
-        <footer>
-          <button className="text-button" onClick={() => setDraft({ ...DEFAULT_SHORTCUTS })}>Restore defaults</button>
-          <span />
-          <button className="text-button" onClick={onClose}>Cancel</button>
-          <button className="action-button" disabled={Boolean(error)} onClick={() => onSave(draft)}>Save</button>
+        <footer className="sheet-foot">
+          <button className="btn quiet" onClick={() => setDraft({ ...DEFAULT_SHORTCUTS })}>Restore defaults</button>
+          <span className="spacer" />
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn primary" disabled={Boolean(error)} onClick={() => onSave(draft)}>Save</button>
         </footer>
       </div>
     </div>

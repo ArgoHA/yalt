@@ -16,7 +16,7 @@
   <img alt="Platform: macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-black.svg">
 </p>
 
-yalt handles object detection, instance segmentation, and image classification without a server, an account, or an upload step. Images never leave your Mac. Annotations autosave to a local SQLite database, and exchange files are only written when you explicitly import or export them.
+yalt handles object detection, instance segmentation, keypoint estimation, and image classification without a server, an account, or an upload step. Images never leave your Mac. Annotations autosave to a local SQLite database, and exchange files are only written when you explicitly import or export them.
 
 ## Features
 
@@ -24,6 +24,7 @@ yalt handles object detection, instance segmentation, and image classification w
 | --- | --- | --- |
 | Object detection | Create, resize, move, relabel, hide, and delete bounding boxes | YOLO TXT + `labels.txt`; COCO JSON bounding boxes |
 | Instance segmentation | Draw and edit polygons, including disconnected islands belonging to one instance | YOLO polygon TXT + `labels.txt`; COCO JSON polygon arrays |
+| Keypoint estimation | Draw a box, then click its named points in order; mark points visible, occluded, or missing | YOLO-pose TXT + `labels.txt`; COCO JSON keypoints |
 | Image classification | Single-label classify-and-advance or multi-label assignment | Quoted CSV; one-folder-per-class datasets |
 
 - Fully local: no cloud service, account, analytics, or upload path.
@@ -100,6 +101,17 @@ an export. Images must map to unique TXT paths: for example, `frame.jpg` and
 `frame.png` in the same directory conflict, and a root-level `labels.jpg`
 conflicts with the class list. Rename those images or use COCO export.
 
+For keypoints, each project defines an ordered list of point names (for
+example the 17 COCO person joints, or `head, tail`); every object carries
+that many points. Drag a box and yalt immediately asks for the first point:
+click to place it, Shift-click to place it as occluded, press `S` to skip a
+point that is not labeled, Backspace to step back, and Return or Escape to
+finish early. Dragging while a point is pending simply starts the next
+object's box. Each point autosaves and is undoable. To fix a point later,
+drag it, Shift-click it to toggle occluded, or Option-click it to clear it;
+the Keypoints list in the inspector places any single or missing point.
+Names can be renamed or extended at any time.
+
 For single-label classification, assigning a class moves the source image into
 that class directory and advances to the next image. The move is journaled and
 undoable. Multi-label classification never moves source images.
@@ -117,9 +129,11 @@ Shortcuts work when a text field is not active.
 | `R` | Draw a rectangle in a detection project |
 | `⌘` + drag | Force a new box through an existing box |
 | `P` | Draw a polygon in a segmentation project |
+| Click / `⇧` click | Place the pending keypoint as visible / occluded |
+| `S` | Skip the pending keypoint |
 | `I` | Add an island to the selected polygon instance |
-| `Return` | Finish the polygon being drawn |
-| `Backspace` / `Delete` | Remove the last draft vertex, selected object, or last remaining object |
+| `Return` | Finish the polygon being drawn, or stop placing keypoints |
+| `Backspace` / `Delete` | Remove the last draft vertex or keypoint, the selected object, or the last remaining object |
 | `Escape` | Cancel the draft or clear the current selection |
 | `D D` | Move an object-free image to `deleted/` |
 | `Space` + drag | Pan the canvas |
@@ -129,7 +143,7 @@ Shortcuts work when a text field is not active.
 | `F` | Fit the image in the canvas |
 | `⌘Z` / `⇧⌘Z` | Undo / redo |
 
-The `E`, `R`, `P`, `I`, `F`, `[` and `]` bindings can be customized from the
+The `E`, `R`, `P`, `I`, `S`, `F`, `[` and `]` bindings can be customized from the
 project menu. Number keys and `D` remain reserved.
 
 Backspace and Delete never remove an image. They delete the selected object,
@@ -173,6 +187,14 @@ dataset/
 
 YOLO rows use normalized detection and segmentation coordinates. COCO export
 is also available for bounding boxes and polygon instances.
+
+Keypoint projects export the layout D-FINE-seg's `task: kpts` reads: YOLO-pose
+rows `class xc yc w h x1 y1 v1 ... xK yK vK` (set `train.kpts.shape: [K, 3]`)
+or COCO annotations with `keypoints`, `num_keypoints`, and `area = 0.53 × box
+area`, the OKS scale D-FINE-seg uses for box-only labels. Flags follow COCO:
+`0` unlabeled (`0 0 0`), `1` occluded, `2` visible. Import also reads
+flag-less `[K, 2]` YOLO rows, and a project without point names takes them
+from the imported file.
 
 For Classifier, use a single-label project directly or export class
 directories. A class-directory export copies labeled images into a clean

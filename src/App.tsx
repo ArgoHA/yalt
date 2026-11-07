@@ -12,15 +12,32 @@ import type {
   ClassificationMode,
   ProjectSummary,
   RecentProject,
+  KeypointSchema,
   TaskType,
 } from "./types";
+import { COCO_PERSON, parseKeypointNames } from "./editor/keypoints";
 import { ProjectWorkspace } from "./components/ProjectWorkspace";
 import yaltIcon from "../assets/brand/yalt-icon.svg";
 
 const TASK_LABELS: Record<TaskType, string> = {
   detection: "Object detection",
   segmentation: "Polygon segmentation",
+  keypoints: "Keypoint estimation",
   classification: "Image classification",
+};
+
+const TASK_SHORT: Record<TaskType, string> = {
+  detection: "Detection",
+  segmentation: "Segmentation",
+  keypoints: "Keypoints",
+  classification: "Classification",
+};
+
+const TASK_HINTS: Record<TaskType, string> = {
+  detection: "Bounding boxes",
+  segmentation: "Closed polygons",
+  keypoints: "Boxes with named points",
+  classification: "Classes per image",
 };
 
 function Icon({ name }: { name: "folder" | "plus" | "arrow" | "refresh" | "image" | "database" | "trash" }) {
@@ -63,7 +80,7 @@ function RecentPreview({ project }: { project: RecentProject }) {
 
   return source
     ? <img src={source} alt="" />
-    : <span className="recent-preview-empty"><Icon name="image" /></span>;
+    : <span className="thumb-empty"><Icon name="image" /></span>;
 }
 
 export default function App() {
@@ -137,69 +154,69 @@ export default function App() {
   }
 
   return (
-    <main className="home-shell">
-      <aside className="project-rail">
-        <div className="wordmark"><img src={yaltIcon} alt="" />yalt</div>
-        <nav className="rail-actions" aria-label="Project actions">
-          <button className="rail-button primary" onClick={() => { setError(null); setShowCreate(true); }}>
-            <Icon name="plus" />New project
-          </button>
-          <button className="rail-button" onClick={() => void chooseExisting()}>
-            <Icon name="folder" />Open project
-          </button>
-        </nav>
-        <div className="local-note">
-          <Icon name="database" />
-          <div><strong>Local only</strong><span>Images never leave your Mac.</span></div>
-        </div>
-      </aside>
-
-      <section className="home-content">
-        <header className="home-header">
-          <div>
-            <h1>Continue annotating</h1>
-            <p>Each project reopens exactly where you left it.</p>
+    <main className="home">
+      <header className="topbar">
+        <div className="home-inner">
+          <div className="brand">
+            <img src={yaltIcon} alt="" />
+            <span className="brand-name">yalt</span>
+            <span className="status" title="Images never leave your Mac. Every edit saves automatically."><i className="dot" />Local only</span>
           </div>
-          <span className="autosave-state"><span />Automatic saving is always on</span>
-        </header>
-
-        {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(null)}>Dismiss</button></div>}
-
-        <div className="recent-list" aria-busy={busy}>
-          {recents.length === 0 ? (
-            <button className="empty-projects" onClick={() => { setError(null); setShowCreate(true); }}>
-              <Icon name="image" />
-              <strong>Create your first local project</strong>
-              <span>Choose a folder of JPEG, PNG, WebP, or TIFF images. yalt indexes them without copying them.</span>
+          <nav className="controls" aria-label="Project actions">
+            <button className="btn" onClick={() => void chooseExisting()}>
+              <Icon name="folder" />Open project
             </button>
-          ) : recents.map((recent) => (
-            <article className="recent-card-container" key={recent.rootPath}>
-              <button
-                className="recent-card"
-                disabled={!recent.available || busy}
-                onClick={() => void openRoot(recent.rootPath)}
-              >
-                <span className="recent-preview">
-                  <RecentPreview project={recent} />
-                  <span className="preview-task">{TASK_LABELS[recent.taskType]}</span>
-                  {!recent.available && <span className="preview-unavailable">Folder unavailable</span>}
-                </span>
-                <span className="recent-card-copy">
-                  <strong>{recent.name}</strong>
-                  <span title={recent.rootPath}>{recent.rootPath}</span>
-                </span>
+            <button className="btn primary" onClick={() => { setError(null); setShowCreate(true); }}>
+              <Icon name="plus" />New project
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      <section className="home-body">
+        <div className="home-inner">
+          <div className="sec-head">
+            <h2>Recent projects</h2>
+            <span className="sec-sub">Each project reopens exactly where you left it. Autosave is always on.</span>
+          </div>
+
+          {error && <div className="error-banner" role="alert">{error}<button onClick={() => setError(null)}>Dismiss</button></div>}
+
+          <div className="project-grid" aria-busy={busy}>
+            {recents.length === 0 ? (
+              <button className="empty-projects" onClick={() => { setError(null); setShowCreate(true); }}>
+                <Icon name="image" />
+                <strong>Create your first project</strong>
+                <span>Choose a folder of JPEG, PNG, WebP, or TIFF images. yalt indexes them in place without copying.</span>
               </button>
-              <button
-                className="recent-remove"
-                aria-label={`Remove ${recent.name}`}
-                title="Remove project"
-                disabled={busy}
-                onClick={() => { setError(null); setProjectToRemove(recent); }}
-              >
-                <Icon name="trash" />
-              </button>
-            </article>
-          ))}
+            ) : recents.map((recent) => (
+              <article className="project-card-wrap" key={recent.rootPath}>
+                <button
+                  className="project-card"
+                  disabled={!recent.available || busy}
+                  onClick={() => void openRoot(recent.rootPath)}
+                >
+                  <span className="project-thumb">
+                    <RecentPreview project={recent} />
+                    {!recent.available && <span className="thumb-unavailable">Folder unavailable</span>}
+                  </span>
+                  <span className="project-meta">
+                    <span className="project-title"><strong>{recent.name}</strong><span>{TASK_SHORT[recent.taskType]}</span></span>
+                    <span className="project-path" title={recent.rootPath}>{recent.rootPath}</span>
+                  </span>
+                </button>
+                <button
+                  className="icon-button project-remove"
+                  aria-label={`Remove ${recent.name}`}
+                  title="Remove project"
+                  disabled={busy}
+                  onClick={() => { setError(null); setProjectToRemove(recent); }}
+                >
+                  <Icon name="trash" />
+                </button>
+              </article>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -254,28 +271,25 @@ function RemoveProjectSheet({
   return (
     <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
       <form
-        className="remove-sheet"
+        className="sheet remove-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="remove-project-title"
         onSubmit={(event) => { event.preventDefault(); void onConfirm(); }}
       >
-        <header>
-          <span className="remove-sheet-icon"><Icon name="trash" /></span>
-          <div>
-            <h2 id="remove-project-title">Remove “{project.name}”?</h2>
-            {project.available ? (
-              <p>yalt will delete the project’s hidden <code>.yalt</code> data and remove it from this screen. Your original images and every other source file will stay untouched.</p>
-            ) : (
-              <p>The source folder is unavailable, so yalt can remove this project from the list but cannot delete its hidden project data. Your original files will stay untouched.</p>
-            )}
-          </div>
+        <header className="sheet-head">
+          <h2 id="remove-project-title">Remove “{project.name}”?</h2>
+          {project.available ? (
+            <p>yalt will delete the project’s hidden <code>.yalt</code> data and remove it from this screen. Your original images and every other source file will stay untouched.</p>
+          ) : (
+            <p>The source folder is unavailable, so yalt can remove this project from the list but cannot delete its hidden project data. Your original files will stay untouched.</p>
+          )}
         </header>
         {project.available && <p className="remove-warning">Annotations, labels, history, and thumbnails stored by yalt will be permanently deleted. This cannot be undone.</p>}
         {error && <div className="sheet-error" role="alert">{error}</div>}
-        <footer>
-          <button type="button" className="text-button" autoFocus onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="danger-button" disabled={busy}>{busy ? "Removing…" : project.available ? "Remove project" : "Remove from list"}</button>
+        <footer className="sheet-foot">
+          <button type="button" className="btn" autoFocus onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn danger" disabled={busy}>{busy ? "Removing…" : project.available ? "Remove project" : "Remove from list"}</button>
         </footer>
       </form>
     </div>
@@ -296,12 +310,14 @@ function CreateProjectSheet({
     name: string;
     taskType: TaskType;
     classificationMode: ClassificationMode | null;
+    keypointSchema: KeypointSchema | null;
   }) => Promise<void>;
 }) {
   const [rootPath, setRootPath] = useState("");
   const [name, setName] = useState("");
   const [taskType, setTaskType] = useState<TaskType>("detection");
   const [classificationMode, setClassificationMode] = useState<ClassificationMode>("single");
+  const [keypointNames, setKeypointNames] = useState("");
   const [folderDropActive, setFolderDropActive] = useState(false);
 
   const useFolderPath = useCallback((path: string) => {
@@ -344,35 +360,39 @@ function CreateProjectSheet({
   return (
     <div className="sheet-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onCancel()}>
       <form
-        className="create-sheet"
+        className="sheet create-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-project-title"
         onSubmit={(event) => {
           event.preventDefault();
           if (rootPath && name.trim()) {
+            const names = parseKeypointNames(keypointNames);
+            // The COCO person preset keeps its skeleton; custom points start without one.
+            const isCocoPerson = names.join(",") === COCO_PERSON.names.join(",");
             void onCreate({
               rootPath,
               name,
               taskType,
               classificationMode: taskType === "classification" ? classificationMode : null,
+              keypointSchema: taskType === "keypoints" ? { names, skeleton: isCocoPerson ? COCO_PERSON.skeleton : [] } : null,
             });
           }
         }}
       >
-        <header><h2 id="new-project-title">New project</h2><p>Choose one annotation task. It cannot change after annotations are created.</p></header>
+        <header className="sheet-head"><h2 id="new-project-title">New project</h2><p>Choose one annotation task. It cannot change after annotations are created.</p></header>
 
         {error && <div className="sheet-error" role="alert">{error}</div>}
 
         <label className="field-label" htmlFor="project-name">Project name</label>
-        <input id="project-name" autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Wildlife training set" />
+        <input id="project-name" className="input" autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Wildlife training set" />
 
         <span className="field-label">Task</span>
         <div className="task-options">
           {(Object.keys(TASK_LABELS) as TaskType[]).map((task) => (
             <label className={taskType === task ? "task-option selected" : "task-option"} key={task}>
               <input type="radio" name="task" checked={taskType === task} onChange={() => setTaskType(task)} />
-              <span><strong>{TASK_LABELS[task]}</strong><small>{task === "detection" ? "Bounding boxes" : task === "segmentation" ? "Closed polygons" : "Classes per image"}</small></span>
+              <span><strong>{TASK_LABELS[task]}</strong><small>{TASK_HINTS[task]}</small></span>
             </label>
           ))}
         </div>
@@ -380,9 +400,9 @@ function CreateProjectSheet({
         {taskType === "classification" && (
           <div className="mode-row">
             <span>Labels per image</span>
-            <div className="segmented-control">
+            <div className="seg" role="group" aria-label="Labels per image">
               {(["single", "multi"] as ClassificationMode[]).map((mode) => (
-                <button type="button" className={classificationMode === mode ? "active" : ""} aria-pressed={classificationMode === mode} onClick={() => setClassificationMode(mode)} key={mode}>
+                <button type="button" aria-pressed={classificationMode === mode} onClick={() => setClassificationMode(mode)} key={mode}>
                   {mode === "single" ? "Single" : "Multiple"}
                 </button>
               ))}
@@ -390,15 +410,24 @@ function CreateProjectSheet({
           </div>
         )}
 
+        {taskType === "keypoints" && <>
+          <div className="field-row">
+            <label className="field-label" htmlFor="keypoint-names">Keypoints per object</label>
+            <button type="button" className="btn quiet" onClick={() => setKeypointNames(COCO_PERSON.names.join(", "))}>COCO person (17)</button>
+          </div>
+          <input id="keypoint-names" className="input" value={keypointNames} onChange={(event) => setKeypointNames(event.target.value)} placeholder="head, tail" />
+          <p className="storage-explainer">Comma-separated, in export order. You can rename or add points later, or take them from an imported file.</p>
+        </>}
+
         <span className="field-label">Image folder</span>
-        <button className={folderDropActive ? "folder-picker drop-active" : "folder-picker"} type="button" onClick={() => void chooseFolder()}>
+        <button className={`folder-picker${folderDropActive ? " drop-active" : ""}${rootPath ? " has-value" : ""}`} type="button" onClick={() => void chooseFolder()}>
           <Icon name="folder" /><span>{rootPath || "Choose a folder or drop one here…"}</span>
         </button>
         <p className="storage-explainer">Annotations will be stored in <code>.yalt/project.sqlite</code> inside this folder.</p>
 
-        <footer>
-          <button type="button" className="text-button" onClick={onCancel}>Cancel</button>
-          <button className="action-button" disabled={!rootPath || !name.trim() || busy}>{busy ? "Creating…" : "Create project"}</button>
+        <footer className="sheet-foot">
+          <button type="button" className="btn" onClick={onCancel}>Cancel</button>
+          <button className="btn primary" disabled={!rootPath || !name.trim() || busy}>{busy ? "Creating…" : "Create project"}</button>
         </footer>
       </form>
     </div>

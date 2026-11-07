@@ -11,6 +11,9 @@ import type {
   HistoryState,
   DetectionState,
   ImportReport,
+  KeypointAnnotationRecord,
+  KeypointGeometry,
+  KeypointSchema,
   PolygonAnnotationRecord,
   PolygonDraft,
   PolygonGeometry,
@@ -54,6 +57,7 @@ export function createProject(input: {
   name: string;
   taskType: TaskType;
   classificationMode: ClassificationMode | null;
+  keypointSchema?: KeypointSchema | null;
 }): Promise<ProjectSummary> {
   return invoke("create_project", input);
 }
@@ -234,4 +238,44 @@ export function exportCocoPolygons(rootPath: string, destinationPath: string): P
 
 export function exportYoloPolygons(rootPath: string, destinationPath: string): Promise<ImportReport> {
   return invoke("export_yolo_polygons", { rootPath, destinationPath });
+}
+
+export function getKeypointSchema(rootPath: string): Promise<KeypointSchema> {
+  return invoke("get_keypoint_schema", { rootPath });
+}
+
+export function setKeypointSchema(rootPath: string, schema: KeypointSchema): Promise<KeypointSchema> {
+  return invoke("set_keypoint_schema", { rootPath, schema });
+}
+
+export function listKeypointAnnotations(rootPath: string, imageId: string): Promise<KeypointAnnotationRecord[]> {
+  return invoke("list_keypoint_annotations", { rootPath, imageId });
+}
+
+export function createKeypointAnnotation(rootPath: string, imageId: string, classId: string, geometry: KeypointGeometry): Promise<KeypointAnnotationRecord> {
+  return invoke("create_keypoint_annotation", { rootPath, imageId, classId, geometry });
+}
+
+export function updateKeypointAnnotation(rootPath: string, annotationId: string, classId: string, geometry: KeypointGeometry, isVisible: boolean): Promise<KeypointAnnotationRecord> {
+  return invoke("update_keypoint_annotation", { rootPath, annotationId, classId, geometry, isVisible });
+}
+
+export function deleteKeypointAnnotation(rootPath: string, annotationId: string): Promise<void> {
+  return invoke("delete_keypoint_annotation", { rootPath, annotationId });
+}
+
+export function importYoloKeypoints(rootPath: string, sourcePath: string): Promise<ImportReport> {
+  return invoke("import_yolo_keypoints", { rootPath, sourcePath });
+}
+
+export function exportYoloKeypoints(rootPath: string, destinationPath: string): Promise<ImportReport> {
+  return invoke("export_yolo_keypoints", { rootPath, destinationPath });
+}
+
+export function importCocoKeypoints(rootPath: string, sourcePath: string): Promise<ImportReport> {
+  return invoke("import_coco_keypoints", { rootPath, sourcePath });
+}
+
+export function exportCocoKeypoints(rootPath: string, destinationPath: string): Promise<ImportReport> {
+  return invoke("export_coco_keypoints", { rootPath, destinationPath });
 }

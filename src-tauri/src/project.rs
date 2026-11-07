@@ -292,8 +292,11 @@ fn validate_project_options(
     if name.trim().is_empty() {
         return Err("Project name cannot be empty.".to_owned());
     }
-    if !matches!(task_type, "detection" | "segmentation" | "classification") {
-        return Err("Choose detection, segmentation, or classification.".to_owned());
+    if !matches!(
+        task_type,
+        "detection" | "segmentation" | "classification" | "keypoints"
+    ) {
+        return Err("Choose detection, segmentation, keypoints, or classification.".to_owned());
     }
     if task_type == "classification"
         && !matches!(classification_mode.unwrap_or("single"), "single" | "multi")

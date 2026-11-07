@@ -1,6 +1,86 @@
+use crate::detection::{with_txt_extension, IndexedImage};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+
+/// A label file matched to an indexed image: (path, image id, width, height).
+pub type MatchedLabelFile = (PathBuf, String, u32, u32);
+
+/// Pairs every `.txt` under `directory` (except the class list) with an image,
+/// by relative path first and then by a unique file stem. Returns the matches
+/// and the number of label files that matched no image.
+pub fn match_label_files(
+    directory: &Path,
+    images: &[IndexedImage],
+) -> (Vec<MatchedLabelFile>, usize) {
+    let mut by_relative = HashMap::new();
+    let mut by_stem: HashMap<String, Vec<&IndexedImage>> = HashMap::new();
+    for image in images {
+        by_relative.insert(with_txt_extension(&image.1).to_lowercase(), image);
+        let stem = Path::new(&image.2)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&image.2)
+            .to_lowercase();
+        by_stem.entry(stem).or_default().push(image);
+    }
+    let mut matched = Vec::new();
+    let mut unmatched = 0;
+    for entry in WalkDir::new(directory)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        let is_txt = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("txt"));
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if !entry.file_type().is_file()
+            || !is_txt
+            || name.eq_ignore_ascii_case("labels.txt")
+            || name.eq_ignore_ascii_case("classes.txt")
+        {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(directory)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_lowercase();
+        let image = by_relative.get(&relative).copied().or_else(|| {
+            let stem = path.file_stem()?.to_string_lossy().to_lowercase();
+            match by_stem.get(&stem)?.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            }
+        });
+        match image {
+            Some((id, _, _, width, height)) => {
+                matched.push((path.to_path_buf(), id.clone(), *width, *height))
+            }
+            None => unmatched += 1,
+        }
+    }
+    (matched, unmatched)
+}
+
+pub fn write_class_list<'a>(
+    directory: &Path,
+    names: impl Iterator<Item = &'a str>,
+) -> Result<(), String> {
+    fs::write(
+        directory.join("labels.txt"),
+        format!("{}\n", names.collect::<Vec<_>>().join("\n")),
+    )
+    .map_err(|error| format!("Could not write labels.txt: {error}"))
+}
 
 pub fn prepare_export<'a>(
     directory: &Path,
