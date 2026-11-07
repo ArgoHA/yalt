@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  constrainViewport,
+  EDGE_PADDING,
   fitViewport,
+  minimumScale,
   fromSnapshot,
   imageToScreen,
   restoreViewport,
@@ -48,6 +51,34 @@ describe("viewport transforms", () => {
     const center = screenToImage(restored, { x: container.width / 2, y: container.height / 2 });
     expect(center.x).toBeLessThanOrEqual(image.width);
     expect(center.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("stops zooming out once a large image fills 80% of the stage", () => {
+    const container = { width: 1000, height: 800 };
+    const image = { width: 2000, height: 1000 };
+    expect(minimumScale(container, image)).toBeCloseTo(0.4);
+    const zoomedOut = constrainViewport({ scale: 0.01, offsetX: 0, offsetY: 0 }, container, image);
+    expect(zoomedOut.scale).toBeCloseTo(0.4);
+    // The clamped image is centered on both axes.
+    expect(zoomedOut.offsetX).toBeCloseTo(100);
+    expect(zoomedOut.offsetY).toBeCloseTo(200);
+  });
+
+  it("never shrinks a small image below its fit size", () => {
+    const container = { width: 1000, height: 800 };
+    const image = { width: 100, height: 100 };
+    expect(minimumScale(container, image)).toBe(fitViewport(container, image).scale);
+    expect(constrainViewport({ scale: 0.2, offsetX: 0, offsetY: 0 }, container, image).scale).toBe(1);
+  });
+
+  it("pans only to the image edge plus a small margin", () => {
+    const container = { width: 1000, height: 800 };
+    const image = { width: 2000, height: 1000 };
+    const pastLeft = constrainViewport({ scale: 1, offsetX: 600, offsetY: 0 }, container, image);
+    expect(pastLeft.offsetX).toBe(EDGE_PADDING);
+    const pastRight = constrainViewport({ scale: 1, offsetX: -5000, offsetY: -5000 }, container, image);
+    expect(pastRight.offsetX).toBe(container.width - image.width - EDGE_PADDING);
+    expect(pastRight.offsetY).toBe(container.height - image.height - EDGE_PADDING);
   });
 
   it("fits instead of restoring non-finite viewport data", () => {

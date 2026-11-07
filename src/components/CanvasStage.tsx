@@ -55,6 +55,8 @@ interface CanvasStageProps {
   onUpdateKeypoints?: (annotation: KeypointAnnotationRecord, geometry: KeypointGeometry) => void;
   onKeypointPlacementChange?: (placement: KeypointPlacement | null) => void;
   onDraftChange: (draft: AnnotationDraft | null) => void;
+  /** A draw tool was used on the image while no class exists or is active. */
+  onMissingClass?: () => void;
   onViewportChange: (snapshot: ViewportSnapshot, zoomPercent: number, persist: boolean) => void;
   onPointerChange: (point: Point | null) => void;
   onDecodeError: (message: string) => void;
@@ -73,7 +75,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
     image, imageUrl, restoredViewport, restoredDraft, activeTool, activeClass, appendPolygonToId, classes,
     annotations, selectedAnnotationId, onSelectAnnotation, onCreateBox, onUpdateBox, onCreatePolygon, onUpdatePolygon,
     keypointSchema = null, keypointPlacement = null, onUpdateKeypoints, onKeypointPlacementChange,
-    onDraftChange, onViewportChange, onPointerChange, onDecodeError,
+    onDraftChange, onMissingClass, onViewportChange, onPointerChange, onDecodeError,
   } = props;
   const hostRef = useRef<HTMLDivElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -690,7 +692,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
             }
             if (!insideImage) return;
             onSelectAnnotation(null);
-            if (!activeClassRef.current) return;
+            if (!activeClassRef.current) { onMissingClass?.(); return; }
             event.currentTarget.setPointerCapture(event.pointerId);
             const draft: BboxDraft = { imageId: image.id, classId: activeClassRef.current.id, x: point.x, y: point.y };
             boxCreateDragRef.current = { pointerId: event.pointerId, start: point, startScreen: screen, classId: draft.classId };
@@ -701,7 +703,7 @@ export const CanvasStage = forwardRef<CanvasStageHandle, CanvasStageProps>(funct
           }
           if (activeToolRef.current === "polygon") {
             if (!insideImage) return;
-            if (!activeClassRef.current && !draftRef.current) return;
+            if (!activeClassRef.current && !draftRef.current) { onMissingClass?.(); return; }
             const existing = draftRef.current && "points" in draftRef.current ? draftRef.current : null;
             if (existing && existing.points.length >= 3 && Math.hypot(existing.points[0].x - point.x, existing.points[0].y - point.y) <= 10 / viewportRef.current.scale) {
               finishDraft();

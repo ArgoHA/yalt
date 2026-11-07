@@ -491,6 +491,12 @@ export function ProjectWorkspace({
     void next.catch((reason) => setError(message(reason)));
   }, [project.rootPath, project.taskType]);
 
+  const promptForClass = useCallback(() => {
+    setRightPanelVisible(true);
+    setShowAddClass(true);
+    setNotice({ text: "Add a class before drawing: every object needs one. Type a name under Classes and press Return.", undoable: false });
+  }, []);
+
   const addClass = useCallback(async () => {
     if (!newClassName.trim() || busy) return;
     setBusy(true);
@@ -1064,6 +1070,7 @@ export function ProjectWorkspace({
                 onUpdateKeypoints={updateKeypointGeometry}
                 onKeypointPlacementChange={setKeypointPlacement}
                 onDraftChange={changeDraft}
+                onMissingClass={promptForClass}
                 onViewportChange={scheduleViewportSave}
                 onPointerChange={setPointer}
                 onDecodeError={setError}
@@ -1224,7 +1231,7 @@ export function ProjectWorkspace({
                 {classes.length === 0 && <p className="empty-classes">Add a class or load labels.txt before drawing.</p>}
               </div>
               {showAddClass && <form className="add-class" onSubmit={(event) => { event.preventDefault(); void addClass(); }}>
-                <input value={newClassName} onChange={(event) => setNewClassName(event.target.value)} placeholder="New class name" aria-label="New class name" />
+                <input autoFocus value={newClassName} onChange={(event) => setNewClassName(event.target.value)} placeholder="New class name" aria-label="New class name" />
                 <button disabled={!newClassName.trim() || busy}>Add</button>
               </form>}
             </section>

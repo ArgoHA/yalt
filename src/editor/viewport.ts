@@ -18,8 +18,12 @@ export interface Viewport {
 
 export const MIN_SCALE = 0.01;
 export const MAX_SCALE = 64;
+/** Screen margin kept around the image when fitting it and when panning to its edges. */
+export const EDGE_PADDING = 42;
+/** Zooming out stops once the image spans this share of the stage. */
+const MIN_FILL = 0.8;
 
-export function fitViewport(container: Size, image: Size, padding = 42): Viewport {
+export function fitViewport(container: Size, image: Size, padding = EDGE_PADDING): Viewport {
   if (container.width <= 0 || container.height <= 0 || image.width <= 0 || image.height <= 0) {
     return { scale: 1, offsetX: 0, offsetY: 0 };
   }
@@ -65,20 +69,34 @@ export function pan(viewport: Viewport, delta: Point): Viewport {
   };
 }
 
+/**
+ * The furthest zoom-out: the image still fills ~80% of the stage, and an image
+ * small enough to fit at 100% never shrinks below its fit size.
+ */
+export function minimumScale(container: Size, image: Size): number {
+  if (container.width <= 0 || container.height <= 0 || image.width <= 0 || image.height <= 0) return MIN_SCALE;
+  const contain = Math.min(container.width / image.width, container.height / image.height);
+  return Math.max(MIN_SCALE, Math.min(fitViewport(container, image).scale, contain * MIN_FILL));
+}
+
 export function constrainViewport(
   viewport: Viewport,
   container: Size,
   image: Size,
-  minimumVisible = 72,
+  padding = EDGE_PADDING,
 ): Viewport {
+  // At the minimum scale the image fits on both axes, so clamping the scale
+  // needs no new anchor: the axes below re-center it.
+  const scale = Math.max(viewport.scale, minimumScale(container, image));
   const constrainAxis = (offset: number, scaled: number, available: number) => {
     if (scaled <= available) return (available - scaled) / 2;
-    return Math.min(available - minimumVisible, Math.max(minimumVisible - scaled, offset));
+    // Pan up to the image edge plus a small margin, never into empty space beyond it.
+    return Math.min(padding, Math.max(available - scaled - padding, offset));
   };
   return {
-    ...viewport,
-    offsetX: constrainAxis(viewport.offsetX, image.width * viewport.scale, container.width),
-    offsetY: constrainAxis(viewport.offsetY, image.height * viewport.scale, container.height),
+    scale,
+    offsetX: constrainAxis(viewport.offsetX, image.width * scale, container.width),
+    offsetY: constrainAxis(viewport.offsetY, image.height * scale, container.height),
   };
 }
 

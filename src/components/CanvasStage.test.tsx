@@ -123,6 +123,23 @@ describe("canvas pointer", () => {
     expect(onCreateBox).toHaveBeenCalledWith({ x: 10, y: 10, width: 50, height: 60 }, "person");
   });
 
+  it.each(["rectangle", "polygon"] as const)("asks for a class when the %s tool is used without one", async (tool) => {
+    const onMissingClass = vi.fn();
+    await act(async () => {
+      root.render(<CanvasStage ref={stage}
+        image={{ id: "image", fileName: "image.jpg", relativePath: "image.jpg", width: 100, height: 100, orientation: 1, status: "active" }}
+        imageUrl="blob:image" restoredViewport={null} restoredDraft={null} activeTool={tool}
+        activeClass={null} appendPolygonToId={null} classes={[]} annotations={[]} selectedAnnotationId={null}
+        onSelectAnnotation={vi.fn()} onCreateBox={vi.fn()} onUpdateBox={vi.fn()} onCreatePolygon={vi.fn()} onMissingClass={onMissingClass}
+        onUpdatePolygon={vi.fn()} onDraftChange={vi.fn()} onViewportChange={vi.fn()} onPointerChange={vi.fn()} onDecodeError={vi.fn()}
+      />);
+    });
+    await act(async () => finishDecode());
+    const canvas = host.querySelector<HTMLCanvasElement>(".interaction-canvas")!;
+    await act(() => { canvas.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 250, clientY: 200, button: 0, pointerId: 1 })); });
+    expect(onMissingClass).toHaveBeenCalledOnce();
+  });
+
   it("uses a visible native cursor while the image is decoding", async () => {
     const canvas = await mount();
     expect(canvas.style.cursor).toBe("crosshair");
